@@ -3,4 +3,11 @@ files
 python-spead2/
 python3-spead2/
 tmp/
+autoreconf.after
+autoreconf.before
+*.debhelper.log
+*.debhelper
+*.substvars
+*.substvars
+
 
