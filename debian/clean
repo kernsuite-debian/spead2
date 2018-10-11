@@ -1,0 +1,5 @@
+src/spead2_unittest.log     
+src/spead2_unittest.trs     
+src/test-suite.log          
+.eggs/
+*.egg-info/

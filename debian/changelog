@@ -1,0 +1,5 @@
+spead2 (1.9.1-1kern1) bionic; urgency=low
+
+  * Initial release.
+
+ -- KERN packaging <packaging@kernsuite.info>  Wed, 10 Oct 2018 10:06:13 +0200

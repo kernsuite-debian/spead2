@@ -1,0 +1,6 @@
+.debhelper/
+files
+python-spead2/
+python3-spead2/
+tmp/
+

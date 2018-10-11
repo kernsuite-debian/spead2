@@ -1,0 +1,15 @@
+#!/usr/bin/make -f
+
+
+%:
+	dh $@ --with autoreconf,python2,python3 --buildsystem=pybuild --parallel
+
+
+override_dh_auto_clean:
+	touch configure
+	dh_auto_clean -O--buildsystem=pybuild -O--parallel
+	rm configure
+
+
+# disabled untill https://github.com/ska-sa/spead2/issues/62 is fixed
+override_dh_auto_test:
