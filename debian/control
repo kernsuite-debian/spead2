@@ -17,7 +17,13 @@ Build-Depends: debhelper (>=9),
                python-nose,
                python3-nose,
                python-decorator,
-               python3-decorator
+               python3-decorator,
+               libibverbs-dev,
+               librdmacm-dev,
+               libpcap0.8-dev,
+               libboost-dev,
+               libboost-program-options-dev,
+               libboost-system-dev,
 Standards-Version: 3.9.8
 Homepage: https://github.com/ska-sa/spead2
 X-Python-Version: >= 2.6

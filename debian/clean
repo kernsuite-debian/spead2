@@ -3,3 +3,10 @@ src/spead2_unittest.trs
 src/test-suite.log          
 .eggs/
 *.egg-info/
+
+aclocal.m4
+build-aux/depcomp
+examples/Makefile.in
+include/Makefile.in
+src/Makefile.in
+
