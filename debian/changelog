@@ -1,3 +1,11 @@
+spead2 (1.9.2-1) bionic; urgency=medium
+
+  [ Gijs Molenaar ]
+  * download correct tarball
+  * New upstream version 1.9.2
+
+ -- KERN packaging <packaging@kernsuite.info>  Thu, 08 Nov 2018 10:24:15 +0100
+
 spead2 (1.9.1-1kern2) bionic; urgency=medium
 
   [ Gijs Molenaar ]
