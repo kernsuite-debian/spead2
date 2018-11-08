@@ -9,6 +9,7 @@ Makefile.am
 Makefile.in
 README.rst
 RELEASE-PROCESS
+aclocal.m4
 bootstrap.sh
 configure
 configure.ac
