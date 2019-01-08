@@ -43,17 +43,52 @@ namespace recv
  */
 static inline item_pointer_t load_bytes_be(const std::uint8_t *ptr, int len)
 {
-    assert(0 <= len && len <= sizeof(item_pointer_t));
+    assert(0 <= len && len <= int(sizeof(item_pointer_t)));
     item_pointer_t out = 0;
     std::memcpy(reinterpret_cast<char *>(&out) + sizeof(item_pointer_t) - len, ptr, len);
     return betoh<item_pointer_t>(out);
 }
 
+void heap_base::transfer_immediates(heap_base &&other)
+{
+    if (!immediate_payload)
+    {
+        std::memcpy(immediate_payload_inline, other.immediate_payload_inline,
+                    sizeof(immediate_payload_inline));
+        for (item &it : items)
+            if (it.is_immediate)
+                it.ptr = immediate_payload_inline + (it.ptr - other.immediate_payload_inline);
+    }
+}
+
+heap_base::heap_base(heap_base &&other)
+    : cnt(std::move(other.cnt)),
+    flavour_(std::move(other.flavour_)),
+    items(std::move(other.items)),
+    immediate_payload(std::move(other.immediate_payload)),
+    payload(std::move(other.payload))
+{
+    transfer_immediates(std::move(other));
+}
+
+heap_base &heap_base::operator=(heap_base &&other)
+{
+    cnt = std::move(other.cnt);
+    flavour_ = std::move(other.flavour_);
+    items = std::move(other.items);
+    immediate_payload = std::move(other.immediate_payload);
+    payload = std::move(other.payload);
+    transfer_immediates(std::move(other));
+    return *this;
+}
+
 void heap_base::load(live_heap &&h, bool keep_addressed, bool keep_payload)
 {
     assert(h.is_contiguous() || !keep_addressed);
+    item_pointer_t *first = h.pointers_begin();
+    item_pointer_t *last = h.pointers_end();
     log_debug("freezing heap with ID %d, %d item pointers, %d bytes payload",
-              h.get_cnt(), h.pointers.size(), h.min_length);
+              h.get_cnt(), last - first, h.min_length);
     /* The length of addressed items is measured from the item to the
      * address of the next item, or the end of the heap. We may receive
      * packets (and hence pointers) out-of-order, so we have to sort.
@@ -63,34 +98,40 @@ void heap_base::load(live_heap &&h, bool keep_addressed, bool keep_payload)
      * The sort needs to be stable, because there can be zero-length fields.
      * TODO: these can still break if they cross packet boundaries.
      */
+    const pointer_decoder &decoder = h.decoder;
     item_pointer_t sort_mask =
-        immediate_mask | ((item_pointer_t(1) << h.heap_address_bits) - 1);
+        immediate_mask | ((item_pointer_t(1) << decoder.address_bits()) - 1);
     auto compare = [sort_mask](item_pointer_t a, item_pointer_t b) {
         return (a & sort_mask) < (b & sort_mask);
     };
-    std::stable_sort(h.pointers.begin(), h.pointers.end(), compare);
+    std::stable_sort(first, last, compare);
 
-    pointer_decoder decoder(h.heap_address_bits);
-    // Determine how much memory is needed to store immediates
+    /* Determine how much memory is needed to store immediates
+     * (conservative - also counts null items).
+     */
     std::size_t n_immediates = 0;
-    for (std::size_t i = 0; i < h.pointers.size(); i++)
+    for (auto ptr = first; ptr != last; ++ptr)
     {
-        item_pointer_t pointer = h.pointers[i];
-        if (decoder.is_immediate(pointer))
+        if (decoder.is_immediate(*ptr))
             n_immediates++;
     }
-    // Allocate memory
-    const std::size_t immediate_size = h.heap_address_bits / 8;
+    // Allocate memory if necessary
+    const std::size_t immediate_size = decoder.address_bits() / 8;
     const std::size_t id_size = sizeof(item_pointer_t) - immediate_size;
-    if (n_immediates > 0)
-        immediate_payload.reset(new uint8_t[immediate_size * n_immediates]);
-    uint8_t *next_immediate = immediate_payload.get();
-    items.reserve(keep_addressed ? h.pointers.size() : n_immediates);
+    uint8_t *next_immediate;
+    if (immediate_size * n_immediates > sizeof(immediate_payload_inline))
+    {
+        next_immediate = new uint8_t[immediate_size * n_immediates];
+        immediate_payload.reset(next_immediate);
+    }
+    else
+        next_immediate = immediate_payload_inline;
+    items.reserve(keep_addressed ? last - first : n_immediates);
 
-    for (std::size_t i = 0; i < h.pointers.size(); i++)
+    for (auto ptr = first; ptr != last; ++ptr)
     {
         item new_item;
-        item_pointer_t pointer = h.pointers[i];
+        item_pointer_t pointer = *ptr;
         new_item.id = decoder.get_id(pointer);
         if (new_item.id == 0)
             continue; // just padding
@@ -115,9 +156,8 @@ void heap_base::load(live_heap &&h, bool keep_addressed, bool keep_payload)
                 continue;
             s_item_pointer_t start = decoder.get_address(pointer);
             s_item_pointer_t end;
-            if (i + 1 < h.pointers.size()
-                && !decoder.is_immediate(h.pointers[i + 1]))
-                end = decoder.get_address(h.pointers[i + 1]);
+            if (ptr + 1 < last && !decoder.is_immediate(ptr[1]))
+                end = decoder.get_address(ptr[1]);
             else
                 end = h.min_length;
             assert(start <= h.min_length);
@@ -135,7 +175,7 @@ void heap_base::load(live_heap &&h, bool keep_addressed, bool keep_payload)
     }
     cnt = h.cnt;
     flavour_ = flavour(maximum_version, 8 * sizeof(item_pointer_t),
-                       h.heap_address_bits, h.bug_compat);
+                       decoder.address_bits(), h.bug_compat);
     if (keep_payload)
         payload = std::move(h.payload);
 }
@@ -168,7 +208,7 @@ heap::heap(live_heap &&h)
     assert(h.is_contiguous());
     load(std::move(h), true, true);
     // Reset h so that it still satisfies its invariants
-    h = live_heap(0, h.bug_compat, h.allocator);
+    h.reset();
 }
 
 descriptor heap::to_descriptor() const
@@ -283,7 +323,7 @@ incomplete_heap::incomplete_heap(live_heap &&h, bool keep_payload, bool keep_pay
     if (keep_payload_ranges)
         payload_ranges = std::move(h.payload_ranges);
     // Reset h so that it still satisfies its invariants
-    h = live_heap(0, h.bug_compat, h.allocator);
+    h.reset();
 }
 
 std::vector<std::pair<s_item_pointer_t, s_item_pointer_t>>

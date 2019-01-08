@@ -34,6 +34,9 @@
 #if SPEAD2_USE_IBV
 # include <spead2/recv_udp_ibv.h>
 #endif
+#if SPEAD2_USE_PCAP
+# include <spead2/recv_udp_pcap.h>
+#endif
 #include <spead2/recv_heap.h>
 #include <spead2/recv_live_heap.h>
 #include <spead2/recv_ring_stream.h>
@@ -78,7 +81,7 @@ static time_point start = std::chrono::high_resolution_clock::now();
 
 static void usage(std::ostream &o, const po::options_description &desc)
 {
-    o << "Usage: spead2_recv [options] <port>\n";
+    o << "Usage: spead2_recv [options] [host]:<port>|file\n";
     o << desc;
 }
 
@@ -263,7 +266,7 @@ private:
             show_heap(frozen, opts);
             n_complete++;
         }
-        else
+        else if (!opts.quiet)
             std::cout << "Discarding incomplete heap " << heap.get_cnt() << '\n';
     }
 
@@ -328,7 +331,25 @@ static std::unique_ptr<spead2::recv::stream> make_stream(
         else
             port = *i;
 
-        if (opts.tcp)
+        bool is_pcap = false;
+        try
+        {
+            boost::lexical_cast<std::uint16_t>(port);
+        }
+        catch (boost::bad_lexical_cast)
+        {
+            is_pcap = true;
+        }
+
+        if (is_pcap)
+        {
+#if SPEAD2_USE_PCAP
+            stream->emplace_reader<spead2::recv::udp_pcap_file_reader>(*i);
+#else
+            throw std::runtime_error("spead2 was compiled without pcap support");
+#endif
+        }
+        else if (opts.tcp)
         {
             tcp::resolver resolver(thread_pool.get_io_service());
             tcp::resolver::query query(host, port, tcp::resolver::query::address_configured);
@@ -429,7 +450,21 @@ int main(int argc, const char **argv)
             n_complete += stream.join();
         }
     }
+    spead2::recv::stream_stats stats;
+    for (const auto &ptr : streams)
+        stats += ptr->get_stats();
 
     std::cout << "Received " << n_complete << " heaps\n";
+#define REPORT_STAT(field) (std::cout << #field ": " << stats.field << '\n')
+    REPORT_STAT(heaps);
+    REPORT_STAT(incomplete_heaps_evicted);
+    REPORT_STAT(incomplete_heaps_flushed);
+    REPORT_STAT(packets);
+    REPORT_STAT(batches);
+    REPORT_STAT(worker_blocked);
+    REPORT_STAT(max_batch);
+    REPORT_STAT(single_packet_heaps);
+    REPORT_STAT(search_dist);
+#undef REPORT_STAT
     return 0;
 }
