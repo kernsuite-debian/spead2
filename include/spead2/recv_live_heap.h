@@ -25,18 +25,24 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
-#include <unordered_set>
+#include <array>
+#include <set>
 #include <memory>
 #include <map>
 #include <functional>
 #include <spead2/common_defines.h>
 #include <spead2/common_memory_allocator.h>
 #include <spead2/recv_packet.h>
+#include <spead2/recv_utils.h>
 
 namespace spead2
 {
 
-namespace unittest { namespace recv { namespace live_heap { struct payload_ranges; }}}
+namespace unittest { namespace recv { namespace live_heap
+{
+    struct add_pointers;
+    struct payload_ranges;
+}}}
 
 namespace recv
 {
@@ -68,7 +74,10 @@ private:
     friend class heap_base;
     friend class heap;
     friend class incomplete_heap;
+    friend struct ::spead2::unittest::recv::live_heap::add_pointers;
     friend struct ::spead2::unittest::recv::live_heap::payload_ranges;
+
+    static constexpr int max_inline_pointers = 8;
 
     /// Heap ID encoded in packets
     s_item_pointer_t cnt;
@@ -82,14 +91,18 @@ private:
      * known.
      */
     s_item_pointer_t min_length = 0;
-    /// Heap address bits (from the SPEAD flavour)
-    int heap_address_bits = -1;
+    /// Item pointer decoder (determined by the SPEAD flavour)
+    pointer_decoder decoder;
     /// Protocol bugs to accept
     bug_compat_mask bug_compat;
     /// True if a stream control packet indicating end-of-heap was found
     bool end_of_stream = false;
-    /// Function to use for copying payload
-    memcpy_function memcpy = std::memcpy;
+    /**
+     * Number of pointers held in inline_pointers. It is set to -1 if the
+     * pointers have been switched to out-of-line storage.
+     */
+    signed char n_inline_pointers = 0;
+
     /**
      * Heap payload. When the length is unknown, this is grown by successive
      * doubling. While @c std::vector would take care of that for us, it also
@@ -98,19 +111,26 @@ private:
     memory_allocator::pointer payload;
     /// Size of the memory in @ref payload
     std::size_t payload_reserved = 0;
+
+    /**@{*/
     /**
      * Item pointers extracted from the packets, excluding those that
      * are extracted in @ref packet_header. They are in native endian.
+     *
+     * For efficiency, the item pointers can be stored in two different ways.
+     * When the number is small, they are held inline to avoid memory
+     * allocation, and checks for duplicates use a linear search. Once there
+     * are too many to hold inline, they are stored both in a vector and a set.
+     * The former preserves order, while the latter is used to check for
+     * duplicates.
      */
-    std::vector<item_pointer_t> pointers;
-    /**
-     * The pointers again, but this time as a set. This is used purely to
-     * eliminate the duplicates that some implementations send us (in every
-     * single packet). This can't currently completely replace
-     * @ref pointers, because we need to preserve ordering in order to figure
-     * out item boundaries in the presence of zero-length items.
-     */
-    std::unordered_set<item_pointer_t> seen_pointers;
+
+    std::array<item_pointer_t, max_inline_pointers> inline_pointers;
+    std::vector<item_pointer_t> external_pointers;
+    std::set<item_pointer_t> seen_pointers;
+
+    /**@}*/
+
     /**
      * Parts of the payload that have been seen. Each key indicates the start
      * of a contiguous region of received data, and the value indicates the end
@@ -120,14 +140,13 @@ private:
      */
     std::map<s_item_pointer_t, s_item_pointer_t> payload_ranges;
 
-    /// Backing memory allocator
-    std::shared_ptr<memory_allocator> allocator;
-
     /**
      * Make sure at least @a size bytes are allocated for payload. If
      * @a exact is false, then a doubling heuristic will be used.
      */
-    void payload_reserve(std::size_t size, bool exact, const packet_header &packet);
+    void payload_reserve(std::size_t size, bool exact, const packet_header &packet,
+                         const memcpy_function &memcpy,
+                         memory_allocator &allocator);
 
     /**
      * Update @ref payload_ranges with a new range. Returns true if the new
@@ -135,19 +154,21 @@ private:
      */
     bool add_payload_range(s_item_pointer_t first, s_item_pointer_t last);
 
+    /**
+     * Update the list of item pointers.
+     */
+    void add_pointers(std::size_t n, const std::uint8_t *pointers);
+
 public:
     /**
-     * Constructor.
+     * Constructor. Note that the constructor does not actually add @a
+     * initial_packet; it just extracts some per-heap information from it.
      *
-     * @param cnt          Heap ID
+     * @param initial_packet  First packet that will be added.
      * @param bug_compat   Bugs to expect in the protocol
-     * @param allocator    Allocator used to allocate payload data
      */
-    explicit live_heap(s_item_pointer_t cnt, bug_compat_mask bug_compat,
-                       std::shared_ptr<memory_allocator> allocator);
-
-    /// Set memcpy function to use for copying payload
-    void set_memcpy(memcpy_function memcpy);
+    explicit live_heap(const packet_header &initial_packet,
+                       bug_compat_mask bug_compat);
 
     /**
      * Attempt to add a packet to the heap. The packet must have been
@@ -160,7 +181,8 @@ public:
      * - inconsistent heap length
      * - payload range is beyond the heap length
      */
-    bool add_packet(const packet_header &packet);
+    bool add_packet(const packet_header &packet, const memcpy_function &memcpy,
+                    memory_allocator &allocator);
     /// True if the heap is complete
     bool is_complete() const;
     /// True if the heap is contiguous
@@ -175,6 +197,12 @@ public:
     s_item_pointer_t get_received_length() const;
     /// Get amount of payload expected, or -1 if not known
     s_item_pointer_t get_heap_length() const;
+    /// Get first stored item pointer
+    item_pointer_t *pointers_begin();
+    /// Get last stored item pointer
+    item_pointer_t *pointers_end();
+    /// Free all allocated memory
+    void reset();
 };
 
 } // namespace recv

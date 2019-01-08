@@ -109,9 +109,16 @@ ibv_flow_t udp_ibv_reader::create_flow(
     return ibv_flow_t(qp, &flow_rule.attr);
 }
 
-int udp_ibv_reader::poll_once()
+int udp_ibv_reader::poll_once(stream_base::add_packet_state &state)
 {
+    /* Number of work requests to queue at a time. This is a balance between
+     * not calling post_recv too often (it takes a lock) and not starving the
+     * receive queue.
+     */
+    const std::size_t post_batch = std::min(std::max(n_slots / 4, std::size_t(1)), std::size_t(64));
     int received = recv_cq.poll(n_slots, wc.get());
+    ibv_recv_wr *head = nullptr, *tail = nullptr;
+    std::size_t cur_batch = 0;
     for (int i = 0; i < received; i++)
     {
         int index = wc[i].wr_id;
@@ -129,7 +136,8 @@ int udp_ibv_reader::poll_once()
             try
             {
                 packet_buffer payload = udp_from_ethernet(const_cast<void *>(ptr), len);
-                bool stopped = process_one_packet(payload.data(), payload.size(), max_size);
+                bool stopped = process_one_packet(state,
+                                                  payload.data(), payload.size(), max_size);
                 if (stopped)
                     return -2;
             }
@@ -142,9 +150,24 @@ int udp_ibv_reader::poll_once()
                 log_warning(e.what());
             }
         }
-        qp.post_recv(&slots[index].wr);
+        if (tail == nullptr)
+            head = tail = &slots[index].wr;
+        else
+            tail = tail->next = &slots[index].wr;
+        cur_batch++;
+        if (cur_batch == post_batch)
+        {
+            tail->next = nullptr;
+            qp.post_recv(head);
+            cur_batch = 0;
+            head = tail = nullptr;
+        }
     }
-    get_stream_base().batch_size(received);
+    if (head != nullptr)
+    {
+        tail->next = nullptr;
+        qp.post_recv(head);
+    }
     return received;
 }
 
@@ -158,6 +181,7 @@ void udp_ibv_reader::packet_handler(const boost::system::error_code &error)
         }
         else
         {
+            stream_base::add_packet_state state(get_stream_base());
             if (comp_channel)
             {
                 ibv_cq *event_cq;
@@ -184,7 +208,7 @@ void udp_ibv_reader::packet_handler(const boost::system::error_code &error)
                 }
                 else if (stop_poll.load())
                     break;
-                int received = poll_once();
+                int received = poll_once(state);
                 if (received < 0)
                     break;
             }

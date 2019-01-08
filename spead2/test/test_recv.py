@@ -647,12 +647,10 @@ class TestStream(object):
         # Wait for the ring buffer to block
         while receiver.stats.worker_blocked == 0:
             time.sleep(0.0)
-        stats = receiver.stats
-        assert_equal(4, stats.heaps)
-        assert_equal(4, stats.packets)
-        assert_equal(0, stats.incomplete_heaps_evicted)
-        assert_equal(0, stats.incomplete_heaps_flushed)
-        assert_equal(1, stats.worker_blocked)
+        # Can't usefully check the stats here, because they're only
+        # updated at the end of a batch.
+        assert_equal(4, receiver.ringbuffer.capacity())
+        assert_equal(4, receiver.ringbuffer.size())
 
         receiver.stop()            # This unblocks all remaining heaps
         stats = receiver.stats
@@ -661,6 +659,8 @@ class TestStream(object):
         assert_equal(0, stats.incomplete_heaps_evicted)
         assert_equal(0, stats.incomplete_heaps_flushed)
         assert_equal(1, stats.worker_blocked)
+        assert_equal(4, receiver.ringbuffer.capacity())
+        assert_equal(4, receiver.ringbuffer.size())
 
     def test_no_stop_heap(self):
         """A heap containing a stop is not passed to the ring"""

@@ -594,6 +594,8 @@ SPEAD2_USE_IBV_FALSE
 SPEAD2_USE_IBV_TRUE
 LTO_FALSE
 LTO_TRUE
+COVERAGE_FALSE
+COVERAGE_TRUE
 OPTIMIZED_FALSE
 OPTIMIZED_TRUE
 DEBUG_LOG_FALSE
@@ -716,6 +718,7 @@ with_movntdq
 with_posix_semaphores
 enable_debug_symbols
 enable_debug_log
+enable_coverage
 enable_optimized
 enable_lto
 '
@@ -1365,6 +1368,7 @@ Optional Features:
                           speeds up one-time build
   --enable-debug-symbols  Build with debug symbols
   --enable-debug-log      Emit debug-level log messages
+  --enable-coverage       Build for coverage (gcov)
   --disable-optimized     Disable compiler optimizations
   --enable-lto            Use link-time optimization
 
@@ -5124,6 +5128,12 @@ if test "${enable_debug_log+set}" = set; then :
 fi
 
 
+# Check whether --enable-coverage was given.
+if test "${enable_coverage+set}" = set; then :
+  enableval=$enable_coverage;
+fi
+
+
 # Check whether --enable-optimized was given.
 if test "${enable_optimized+set}" = set; then :
   enableval=$enable_optimized;
@@ -5158,6 +5168,14 @@ fi
 else
   OPTIMIZED_TRUE='#'
   OPTIMIZED_FALSE=
+fi
+
+ if test "x$enable_coverage" = "xyes"; then
+  COVERAGE_TRUE=
+  COVERAGE_FALSE='#'
+else
+  COVERAGE_TRUE='#'
+  COVERAGE_FALSE=
 fi
 
  if test "x$enable_lto" = "xyes"; then
@@ -5378,6 +5396,10 @@ Usually this means the macro was only invoked conditionally." "$LINENO" 5
 fi
 if test -z "${OPTIMIZED_TRUE}" && test -z "${OPTIMIZED_FALSE}"; then
   as_fn_error $? "conditional \"OPTIMIZED\" was never defined.
+Usually this means the macro was only invoked conditionally." "$LINENO" 5
+fi
+if test -z "${COVERAGE_TRUE}" && test -z "${COVERAGE_FALSE}"; then
+  as_fn_error $? "conditional \"COVERAGE\" was never defined.
 Usually this means the macro was only invoked conditionally." "$LINENO" 5
 fi
 if test -z "${LTO_TRUE}" && test -z "${LTO_FALSE}"; then
