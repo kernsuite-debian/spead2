@@ -51,17 +51,16 @@ tcp_reader::tcp_reader(
     std::size_t max_size,
     std::size_t buffer_size)
     : reader(owner), acceptor(std::move(acceptor)),
-    peer(this->acceptor.get_io_service()),
+    peer(get_socket_io_service(this->acceptor)),
     max_size(max_size),
     buffer(new std::uint8_t[max_size * pkts_per_buffer]),
     head(buffer.get()),
     tail(buffer.get())
 {
-    assert(&this->acceptor.get_io_service() == &get_io_service());
+    assert(socket_uses_io_service(this->acceptor, get_io_service()));
     set_socket_recv_buffer_size(this->acceptor, buffer_size);
     this->acceptor.async_accept(peer,
-        get_stream().get_strand().wrap(
-            std::bind(&tcp_reader::accept_handler, this, std::placeholders::_1)));
+        std::bind(&tcp_reader::accept_handler, this, std::placeholders::_1));
 }
 
 tcp_reader::tcp_reader(
@@ -71,7 +70,7 @@ tcp_reader::tcp_reader(
     std::size_t buffer_size)
     : tcp_reader(
           owner,
-          boost::asio::ip::tcp::acceptor(owner.get_strand().get_io_service(), endpoint),
+          boost::asio::ip::tcp::acceptor(owner.get_io_service(), endpoint),
           max_size, buffer_size)
 {
 }
@@ -88,17 +87,19 @@ void tcp_reader::packet_handler(
     const boost::system::error_code &error,
     std::size_t bytes_transferred)
 {
+    stream_base::add_packet_state state(get_stream_base());
+
     bool read_more = false;
     if (!error)
     {
-        if (get_stream_base().is_stopped())
+        if (state.is_stopped())
             log_info("TCP reader: discarding packet received after stream stopped");
         else
-            read_more = process_buffer(bytes_transferred);
+            read_more = process_buffer(state, bytes_transferred);
     }
     else if (error == boost::asio::error::eof)
     {
-        get_stream_base().stop_received();
+        state.stop();
         read_more = false;
     }
     else if (error != boost::asio::error::operation_aborted)
@@ -113,7 +114,7 @@ void tcp_reader::packet_handler(
     }
 }
 
-bool tcp_reader::parse_packet()
+bool tcp_reader::parse_packet(stream_base::add_packet_state &state)
 {
     assert(pkt_size > 0);
     assert(tail - head >= pkt_size);
@@ -127,10 +128,8 @@ bool tcp_reader::parse_packet()
     std::size_t size = decode_packet(packet, head, pkt_size);
     if (size == pkt_size)
     {
-        stream_base &s = get_stream_base();
-        stream_base::add_packet_state state(s);
-        s.add_packet(state, packet);
-        if (s.is_stopped())
+        state.add_packet(packet);
+        if (state.is_stopped())
         {
             log_debug("TCP reader: end of stream detected");
             return true;
@@ -139,7 +138,7 @@ bool tcp_reader::parse_packet()
     return false;
 }
 
-bool tcp_reader::process_buffer(const std::size_t bytes_recv)
+bool tcp_reader::process_buffer(stream_base::add_packet_state &state, const std::size_t bytes_recv)
 {
     tail += bytes_recv;
     while (tail > head)
@@ -152,7 +151,7 @@ bool tcp_reader::process_buffer(const std::size_t bytes_recv)
             continue;
         if (std::size_t(tail - head) < pkt_size)
             return true;
-        if (parse_packet())
+        if (parse_packet(state))
             return false;
     }
     return true;
@@ -217,6 +216,13 @@ bool tcp_reader::skip_bytes()
 
 void tcp_reader::accept_handler(const boost::system::error_code &error)
 {
+    /* We need to hold the stream's queue_mutex, because that guards access
+     * to the sockets. This is a heavy-weight way to do it, but since it
+     * only happens once per connection it is probably not worth trying to
+     * add a lighter-weight interface to @c stream.
+     */
+    stream_base::add_packet_state state(get_stream_base());
+
     acceptor.close();
     if (!error)
         enqueue_receive();
@@ -248,9 +254,7 @@ void tcp_reader::enqueue_receive()
 
     peer.async_receive(
         boost::asio::buffer(tail, bufsize - (tail - buf)),
-        get_stream().get_strand().wrap(
-            std::bind(&tcp_reader::packet_handler,
-                this, _1, _2)));
+        std::bind(&tcp_reader::packet_handler, this, _1, _2));
 }
 
 void tcp_reader::stop()

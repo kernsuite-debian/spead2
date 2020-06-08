@@ -1,4 +1,4 @@
-/* Copyright 2016 SKA South Africa
+/* Copyright 2016, 2019 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -55,104 +55,124 @@ ibv_qp_t udp_ibv_stream::create_qp(
 
 void udp_ibv_stream::reap()
 {
-    ibv_wc wc;
+    constexpr int BATCH = 16;
+    ibv_wc wc[BATCH];
     int done;
-    while ((done = send_cq.poll(1, &wc)) > 0)
+    while ((done = send_cq.poll(BATCH, wc)) > 0)
     {
-        if (wc.status != IBV_WC_SUCCESS)
+        for (int i = 0; i < done; i++)
         {
-            log_warning("Work Request failed with code %1%", wc.status);
+            if (wc[i].status != IBV_WC_SUCCESS)
+            {
+                log_warning("Work Request failed with code %1%", wc[i].status);
+            }
+            slot *s = &slots[wc[i].wr_id];
+            available.push_back(s);
         }
-        slot *s = &slots[wc.wr_id];
-        available.push_back(s);
     }
 }
 
-udp_ibv_stream::rerun_async_send_packet::rerun_async_send_packet(
-    udp_ibv_stream *self,
-    const packet &pkt,
-    udp_ibv_stream::completion_handler &&handler)
-    : self(self), pkt(&pkt), handler(std::move(handler))
+bool udp_ibv_stream::make_space()
 {
-}
-
-void udp_ibv_stream::rerun_async_send_packet::operator()(
-    boost::system::error_code ec, std::size_t bytes_transferred)
-{
-    (void) bytes_transferred;
-    if (ec)
-    {
-        handler(ec, 0);
-    }
-    else
-    {
-        ibv_cq *event_cq;
-        void *event_cq_context;
-        // This should be non-blocking, since we were woken up
-        self->comp_channel.get_event(&event_cq, &event_cq_context);
-        self->send_cq.ack_events(1);
-        self->async_send_packet(*pkt, std::move(handler));
-    }
-}
-
-udp_ibv_stream::invoke_handler::invoke_handler(
-    udp_ibv_stream::completion_handler &&handler,
-    boost::system::error_code ec,
-    std::size_t bytes_transferred)
-    : handler(std::move(handler)), ec(ec), bytes_transferred(bytes_transferred)
-{
-}
-
-void udp_ibv_stream::invoke_handler::operator()()
-{
-    handler(ec, bytes_transferred);
-}
-
-void udp_ibv_stream::async_send_packet(const packet &pkt, completion_handler &&handler)
-{
-    try
+    for (int i = 0; i < max_poll; i++)
     {
         reap();
-        if (available.empty())
+        if (available.size() >= n_current_packets)
+            return true;
+    }
+
+    // Synchronous attempts failed. Give the event loop a chance to run.
+    if (comp_channel)
+    {
+        send_cq.req_notify(false);
+
+        auto rerun = [this] (const boost::system::error_code &ec, size_t)
         {
-            if (comp_channel)
+            if (ec)
             {
-                send_cq.req_notify(false);
-                // Need to check again, in case of a race
-                reap();
-                comp_channel_wrapper.async_read_some(
-                    boost::asio::null_buffers(),
-                    rerun_async_send_packet(this, pkt, std::move(handler)));
-                return;
+                for (std::size_t i = 0; i < n_current_packets; i++)
+                    current_packets[i].result = ec;
+                packets_handler();
             }
             else
             {
-                // Poll mode - keep trying until we have space
-                while (available.empty())
-                    reap();
+                ibv_cq *event_cq;
+                void *event_cq_context;
+                // This should be non-blocking, since we were woken up, but
+                // spurious wakeups have been observed.
+                while (comp_channel.get_event(&event_cq, &event_cq_context))
+                    send_cq.ack_events(1);
+                async_send_packets();
             }
-        }
-        slot *s = available.back();
-        available.pop_back();
+        };
 
-        std::size_t payload_size = boost::asio::buffer_size(pkt.buffers);
-        ipv4_packet ipv4 = s->frame.payload_ipv4();
-        ipv4.total_length(payload_size + udp_packet::min_size + ipv4.header_length());
-        ipv4.update_checksum();
-        udp_packet udp = ipv4.payload_udp();
-        udp.length(payload_size + udp_packet::min_size);
-        packet_buffer payload = udp.payload();
-        boost::asio::buffer_copy(boost::asio::mutable_buffer(payload), pkt.buffers);
-        s->sge.length = payload_size + (payload.data() - s->frame.data());
-        qp.post_send(&s->wr);
-        get_io_service().post(invoke_handler(std::move(handler), boost::system::error_code(),
-                                             payload_size));
+        /* Need to check again, in case of a race (in which case the event
+         * won't fire until we send some more packets). Note that this
+         * leaves us with an unwanted req_notify which will lead to a
+         * spurious event later, but that is harmless.
+         */
+        reap();
+        if (available.size() >= n_current_packets)
+            return true;
+        comp_channel_wrapper.async_read_some(boost::asio::null_buffers(), rerun);
+    }
+    else
+    {
+        get_io_service().post([this] { async_send_packets(); });
+    }
+
+    return false;
+}
+
+void udp_ibv_stream::async_send_packets()
+{
+    try
+    {
+        if (!make_space())
+            return;
+
+        slot *prev = nullptr;
+        slot *first = nullptr;
+        for (std::size_t i = 0; i < n_current_packets; i++)
+        {
+            const auto &current_packet = current_packets[i];
+            slot *s = available.back();
+            available.pop_back();
+
+            std::size_t payload_size = current_packet.size;
+            ipv4_packet ipv4 = s->frame.payload_ipv4();
+            ipv4.total_length(payload_size + udp_packet::min_size + ipv4.header_length());
+            ipv4.update_checksum();
+            udp_packet udp = ipv4.payload_udp();
+            udp.length(payload_size + udp_packet::min_size);
+            packet_buffer payload = udp.payload();
+            boost::asio::buffer_copy(boost::asio::mutable_buffer(payload), current_packet.pkt.buffers);
+            s->sge.length = payload_size + (payload.data() - s->frame.data());
+            s->wr.next = nullptr;
+            if (prev != nullptr)
+                prev->wr.next = &s->wr;
+            else
+                first = s;
+            prev = s;
+        }
+        qp.post_send(&first->wr);
+        // TODO: wait until we've reaped the CQE to claim success and post
+        // completion?
+        for (std::size_t i = 0; i < n_current_packets; i++)
+            current_packets[i].result = boost::system::error_code();
     }
     catch (std::system_error &e)
     {
-        get_io_service().post(invoke_handler(std::move(handler),
-            boost::system::error_code(e.code().value(), boost::system::system_category()), 0));
+        boost::system::error_code ec(e.code().value(), boost::system::system_category());
+        for (std::size_t i = 0; i < n_current_packets; i++)
+            current_packets[i].result = ec;
     }
+    get_io_service().post([this] { packets_handler(); });
+}
+
+static std::size_t calc_n_slots(const stream_config &config, std::size_t buffer_size)
+{
+    return std::max(std::size_t(1), buffer_size / (config.get_max_packet_size() + header_length));
 }
 
 udp_ibv_stream::udp_ibv_stream(
@@ -164,11 +184,13 @@ udp_ibv_stream::udp_ibv_stream(
     int ttl,
     int comp_vector,
     int max_poll)
-    : stream_impl<udp_ibv_stream>(std::move(io_service), config),
-    n_slots(std::max(std::size_t(1), buffer_size / (config.get_max_packet_size() + header_length))),
+    : stream_impl<udp_ibv_stream>(std::move(io_service), config,
+                                  std::max(std::size_t(1), calc_n_slots(config, buffer_size) / 2)),
+    n_slots(calc_n_slots(config, buffer_size)),
     socket(get_io_service(), endpoint.protocol()),
     cm_id(event_channel, nullptr, RDMA_PS_UDP),
-    comp_channel_wrapper(get_io_service())
+    comp_channel_wrapper(get_io_service()),
+    max_poll(max_poll)
 {
     if (!endpoint.address().is_v4() || !endpoint.address().is_multicast())
         throw std::invalid_argument("endpoint is not an IPv4 multicast address");

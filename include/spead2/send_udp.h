@@ -1,4 +1,4 @@
-/* Copyright 2015 SKA South Africa
+/* Copyright 2015, 2019 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -21,8 +21,17 @@
 #ifndef SPEAD2_SEND_UDP_H
 #define SPEAD2_SEND_UDP_H
 
+#ifndef _GNU_SOURCE
+# define _GNU_SOURCE
+#endif
+#include <spead2/common_features.h>
+#if SPEAD2_USE_SENDMMSG
+# include <sys/socket.h>
+# include <sys/types.h>
+#endif
 #include <boost/asio.hpp>
 #include <utility>
+#include <vector>
 #include <spead2/send_packet.h>
 #include <spead2/send_stream.h>
 
@@ -38,11 +47,16 @@ private:
     boost::asio::ip::udp::socket socket;
     boost::asio::ip::udp::endpoint endpoint;
 
-    template<typename Handler>
-    void async_send_packet(const packet &pkt, Handler &&handler)
-    {
-        socket.async_send_to(pkt.buffers, endpoint, std::move(handler));
-    }
+    /// Implements async_send_packets, starting from @a first
+    void send_packets(std::size_t first);
+
+    void async_send_packets();
+
+    static constexpr int batch_size = 64;
+#if SPEAD2_USE_SENDMMSG
+    struct mmsghdr msgvec[batch_size];
+    std::vector<struct iovec> msg_iov;
+#endif
 
 public:
     /// Socket send buffer size, if none is explicitly passed to the constructor
@@ -71,11 +85,13 @@ public:
         std::size_t buffer_size = default_buffer_size,
         const boost::asio::ip::address &interface_address = boost::asio::ip::address());
 
+#if BOOST_VERSION < 107000
     /**
      * Constructor using an existing socket. The socket must be open but
      * not bound.
      *
-     * @deprecated Use the overload without @a buffer_size.
+     * @deprecated Use the overload without @a buffer_size and with an explicit
+     * @a io_service.
      */
     udp_stream(
         boost::asio::ip::udp::socket &&socket,
@@ -84,13 +100,18 @@ public:
         std::size_t buffer_size);
 
     /**
-     * Constructor using an existing socket. The socket must be open and
+     * Constructor using an existing socket. The socket must be open
      * but not connected.
+     *
+     * @deprecated This constructor is not supported from Boost 1.70 onwards,
+     * and will be removed entirely in a future release. Use the constructor with
+     * an explicit @a io_service.
      */
     udp_stream(
         boost::asio::ip::udp::socket &&socket,
         const boost::asio::ip::udp::endpoint &endpoint,
         const stream_config &config = stream_config());
+#endif // BOOST_VERSION < 107000
 
     /**
      * Constructor using an existing socket and an explicit io_service or

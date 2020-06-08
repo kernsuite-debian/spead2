@@ -1,4 +1,4 @@
-/* Copyright 2015 SKA South Africa
+/* Copyright 2015, 2018-2020 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -28,9 +28,6 @@
 #include <spead2/common_thread_pool.h>
 #include <spead2/recv_udp.h>
 #include <spead2/recv_tcp.h>
-#if SPEAD2_USE_NETMAP
-# include <spead2/recv_netmap.h>
-#endif
 #if SPEAD2_USE_IBV
 # include <spead2/recv_udp_ibv.h>
 #endif
@@ -64,9 +61,6 @@ struct options
     std::size_t mem_initial = 8;
     bool ring = false;
     bool memcpy_nt = false;
-#if SPEAD2_USE_NETMAP
-    bool netmap = false;
-#endif
 #if SPEAD2_USE_IBV
     bool ibv = false;
     int ibv_comp_vector = 0;
@@ -112,7 +106,7 @@ static options parse_args(int argc, const char **argv)
         ("pyspead", make_opt(opts.pyspead), "Be bug-compatible with PySPEAD")
         ("joint", make_opt(opts.joint), "Treat all sources as a single stream")
         ("tcp", make_opt(opts.tcp), "Receive data over TCP instead of UDP")
-        ("bind", make_opt(opts.bind), "Interface address for multicast")
+        ("bind", make_opt(opts.bind), "Interface address")
         ("packet", make_opt_no_default(opts.packet), "Maximum packet size to use")
         ("buffer", make_opt_no_default(opts.buffer), "Socket buffer size")
         ("threads", make_opt(opts.threads), "Number of worker threads")
@@ -125,9 +119,6 @@ static options parse_args(int argc, const char **argv)
         ("mem-initial", make_opt(opts.mem_initial), "Initial free memory buffers")
         ("ring", make_opt(opts.ring), "Use ringbuffer instead of callbacks")
         ("memcpy-nt", make_opt(opts.memcpy_nt), "Use non-temporal memcpy")
-#if SPEAD2_USE_NETMAP
-        ("netmap", make_opt(opts.netmap), "Use netmap")
-#endif
 #if SPEAD2_USE_IBV
         ("ibv", make_opt(opts.ibv), "Use ibverbs")
         ("ibv-vector", make_opt(opts.ibv_comp_vector), "Interrupt vector (-1 for polled)")
@@ -178,16 +169,6 @@ static options parse_args(int argc, const char **argv)
             throw po::error("--ibv requires --bind");
         if (opts.tcp && opts.ibv)
             throw po::error("--ibv and --tcp are incompatible");
-#endif
-#if SPEAD2_USE_NETMAP
-        if (opts.sources.size() > 1 && opts.netmap)
-            throw po::error("--netmap cannot be used with multiple sources");
-        if (opts.tcp && opts.netmap)
-            throw po::error("--netmap and --tcp are incompatible");
-#endif
-#if SPEAD2_USE_IBV && SPEAD2_USE_NETMAP
-        if (opts.ibv && opts.netmap)
-            throw po::error("--ibv and --netmap are incompatible");
 #endif
         return opts;
     }
@@ -247,7 +228,10 @@ void show_heap(const spead2::recv::heap &fheap, const options &opts)
     for (const auto &item : items)
     {
         std::cout << std::hex << item.id << std::dec
-            << " = [" << item.length << " bytes]\n";
+            << " = [" << item.length << " bytes]";
+        if (item.is_immediate)
+            std::cout << " = " << std::hex << item.immediate_value;
+        std::cout << '\n';
     }
     std::cout << std::noshowbase;
 }
@@ -277,6 +261,11 @@ public:
     callback_stream(const options &opts, Args&&... args)
         : spead2::recv::stream::stream(std::forward<Args>(args)...),
         opts(opts) {}
+
+    ~callback_stream()
+    {
+        stop();
+    }
 
     virtual void stop_received() override
     {
@@ -336,7 +325,7 @@ static std::unique_ptr<spead2::recv::stream> make_stream(
         {
             boost::lexical_cast<std::uint16_t>(port);
         }
-        catch (boost::bad_lexical_cast)
+        catch (boost::bad_lexical_cast &)
         {
             is_pcap = true;
         }
@@ -359,16 +348,10 @@ static std::unique_ptr<spead2::recv::stream> make_stream(
         else
         {
             udp::resolver resolver(thread_pool.get_io_service());
-            udp::resolver::query query(host, port);
+            udp::resolver::query query(host, port,
+                boost::asio::ip::udp::resolver::query::address_configured
+                | boost::asio::ip::udp::resolver::query::passive);
             udp::endpoint endpoint = *resolver.resolve(query);
-#if SPEAD2_USE_NETMAP
-            if (opts.netmap)
-            {
-                stream->emplace_reader<spead2::recv::netmap_udp_reader>(
-                    opts.bind, endpoint.port());
-            }
-            else
-#endif
 #if SPEAD2_USE_IBV
             if (opts.ibv)
             {
@@ -376,8 +359,7 @@ static std::unique_ptr<spead2::recv::stream> make_stream(
             }
             else
 #endif
-            if (endpoint.address().is_multicast() && endpoint.address().is_v4()
-                && !opts.bind.empty())
+            if (endpoint.address().is_v4() && !opts.bind.empty())
             {
                 stream->emplace_reader<spead2::recv::udp_reader>(
                     endpoint, opts.packet, opts.buffer,
@@ -386,7 +368,7 @@ static std::unique_ptr<spead2::recv::stream> make_stream(
             else
             {
                 if (!opts.bind.empty())
-                    std::cerr << "--bind is only applicable to IPv4 multicast, ignoring\n";
+                    std::cerr << "--bind is not implemented for IPv6\n";
                 stream->emplace_reader<spead2::recv::udp_reader>(endpoint, opts.packet, opts.buffer);
             }
         }
@@ -424,6 +406,17 @@ int main(int argc, const char **argv)
             streams.push_back(make_stream(thread_pool, opts, it, it + 1));
     }
 
+    spead2::thread_pool stopper_thread_pool;
+    boost::asio::signal_set signals(stopper_thread_pool.get_io_service());
+    signals.add(SIGINT);
+    signals.async_wait([&streams] (const boost::system::error_code &error, int signal_number) {
+        if (!error)
+            for (const std::unique_ptr<spead2::recv::stream> &stream : streams)
+            {
+                stream->stop();
+            }
+    });
+
     std::int64_t n_complete = 0;
     if (opts.ring)
     {
@@ -450,9 +443,17 @@ int main(int argc, const char **argv)
             n_complete += stream.join();
         }
     }
+    signals.cancel();
     spead2::recv::stream_stats stats;
-    for (const auto &ptr : streams)
+    for (auto &ptr : streams)
+    {
+        /* Even though we've seen the stop condition, if we don't explicitly
+         * stop the stream then a race condition means we might not see the
+         * last batch of statistics updates.
+         */
+        ptr->stop();
         stats += ptr->get_stats();
+    }
 
     std::cout << "Received " << n_complete << " heaps\n";
 #define REPORT_STAT(field) (std::cout << #field ": " << stats.field << '\n')

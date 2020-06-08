@@ -1,4 +1,4 @@
-/* Copyright 2015 SKA South Africa
+/* Copyright 2015, 2019 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -35,10 +35,10 @@ mem_reader::mem_reader(
     : reader(owner), ptr(ptr), length(length)
 {
     assert(ptr != nullptr);
-    get_stream().get_strand().post([this] {
+    get_io_service().post([this] {
         mem_to_stream(get_stream_base(), this->ptr, this->length);
         // There will be no more data, so we can stop the stream immediately.
-        get_stream_base().stop_received();
+        get_stream_base().stop();
         stopped();
     });
 }

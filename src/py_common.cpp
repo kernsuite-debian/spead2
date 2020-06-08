@@ -33,6 +33,9 @@
 #include <spead2/common_memory_pool.h>
 #include <spead2/common_thread_pool.h>
 #include <spead2/common_inproc.h>
+#if SPEAD2_USE_IBV
+# include <spead2/common_ibv.h>
+#endif
 
 namespace py = pybind11;
 
@@ -88,6 +91,18 @@ static void translate_exception_boost_io_error(std::exception_ptr p)
 template class socket_wrapper<boost::asio::ip::udp::socket>;
 template class socket_wrapper<boost::asio::ip::tcp::socket>;
 template class socket_wrapper<boost::asio::ip::tcp::acceptor>;
+
+boost::asio::ip::address make_address_no_release(
+    boost::asio::io_service &io_service, const std::string &hostname,
+    boost::asio::ip::resolver_query_base::flags flags)
+{
+    if (hostname == "")
+        return boost::asio::ip::address();
+    using boost::asio::ip::udp;
+    udp::resolver resolver(io_service);
+    udp::resolver::query query(hostname, "", flags);
+    return resolver.resolve(query)->endpoint().address();
+}
 
 void deprecation_warning(const char *msg)
 {
@@ -158,7 +173,7 @@ void log_function_python::run()
                     log(msg.first, msg.second);
                 }
             }
-            catch (ringbuffer_empty)
+            catch (ringbuffer_empty &)
             {
             }
             if (overflowed.exchange(false))
@@ -166,7 +181,7 @@ void log_function_python::run()
                     "Log ringbuffer was full - some log messages were dropped");
         }
     }
-    catch (ringbuffer_stopped)
+    catch (ringbuffer_stopped &)
     {
         // Could possibly report the overflowed flag here again - but this may be
         // deep into interpreter shutdown and it might not be safe to log.
@@ -204,7 +219,7 @@ void log_function_python::operator()(log_level level, const std::string &msg)
     {
         ring.try_emplace(level, msg);
     }
-    catch (ringbuffer_full)
+    catch (ringbuffer_full &)
     {
         overflowed = true;
     }
@@ -225,7 +240,6 @@ void log_function_python::stop()
 
 void register_module(py::module m)
 {
-    using namespace spead2;
     using namespace pybind11::literals;
 
     py::register_exception<ringbuffer_stopped>(m, "Stopped");
@@ -340,6 +354,18 @@ void register_module(py::module m)
         .def_readwrite("format", &descriptor::format)
         .def_property("numpy_header", bytes_getter(&descriptor::numpy_header), bytes_setter(&descriptor::numpy_header))
     ;
+#if SPEAD2_USE_IBV
+    py::class_<ibv_context_t>(m, "IbvContext")
+        .def(py::init([](const std::string &interface_address)
+            {
+                py::gil_scoped_release release;
+                boost::asio::io_service io_service;
+                return ibv_context_t(make_address_no_release(
+                    io_service, interface_address, boost::asio::ip::udp::resolver::query::passive));
+            }), "interface"_a)
+        .def("reset", [](ibv_context_t &self) { self.reset(); })
+    ;
+#endif
 }
 
 void register_logging()

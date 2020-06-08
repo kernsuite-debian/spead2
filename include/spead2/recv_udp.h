@@ -1,4 +1,4 @@
-/* Copyright 2015 SKA South Africa
+/* Copyright 2015, 2020 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -53,14 +53,6 @@ private:
     /// Maximum packet size we will accept
     std::size_t max_size;
 #if SPEAD2_USE_RECVMMSG
-    /**
-     * A dup(2) of @ref socket. This is used for the actual recvmmsg call. The
-     * duplicate is needed so that we can asynchronously call socket.close()
-     * to shut down the reader while racing with the recvmmsg call. The
-     * close call will just cancel pending handlers, without causing us to
-     * read from a closed file descriptor.
-     */
-    boost::asio::ip::udp::socket socket2;
     /// Buffer for asynchronous receive, of size @a max_size + 1.
     std::vector<std::unique_ptr<std::uint8_t[]>> buffer;
     /// Scatter-gather array for each buffer
@@ -107,20 +99,26 @@ public:
         std::size_t buffer_size = default_buffer_size);
 
     /**
-     * Constructor with explicit multicast interface address (IPv4 only).
+     * Constructor with explicit interface address (IPv4 only).
      *
-     * The socket will have @c SO_REUSEADDR set, so that multiple sockets can
-     * all listen to the same multicast stream. If you want to let the
-     * system pick the interface for the multicast subscription, use
-     * @c boost::asio::ip::address_v4::any(), or use the default constructor.
+     * This overload is designed for use with multicast, but can also be used
+     * with a unicast endpoint as long as the address matches the interface
+     * address.
+     *
+     * When a multicast group is used, the socket will have @c SO_REUSEADDR
+     * set, so that multiple sockets can all listen to the same multicast
+     * stream. If you want to let the system pick the interface for the
+     * multicast subscription, use @c boost::asio::ip::address_v4::any(), or
+     * use the default constructor.
      *
      * @param owner        Owning stream
-     * @param endpoint     Multicast group and port
+     * @param endpoint     Address and port
      * @param max_size     Maximum packet size that will be accepted.
      * @param buffer_size  Requested socket buffer size.
      * @param interface_address  Address of the interface which should join the group
      *
-     * @throws std::invalid_argument If @a endpoint is not an IPv4 multicast address
+     * @throws std::invalid_argument If @a endpoint is not an IPv4 multicast address and
+     *                               does not match @a interface_address.
      * @throws std::invalid_argument If @a interface_address is not an IPv4 address
      */
     udp_reader(

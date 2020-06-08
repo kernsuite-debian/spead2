@@ -1,4 +1,4 @@
-# Copyright 2015 SKA South Africa
+# Copyright 2015, 2019 SKA South Africa
 #
 # This program is free software: you can redistribute it and/or modify it under
 # the terms of the GNU Lesser General Public License as published by the Free
@@ -14,16 +14,20 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 from __future__ import division, print_function
+import binascii
+import gc
+import struct
+import time
+import threading
+import weakref
+
+import numpy as np
+from nose.tools import (
+    assert_equal, assert_is_none, assert_is_not_none, assert_false,
+    assert_raises)
+
 import spead2
 import spead2.send as send
-import struct
-import binascii
-import numpy as np
-import weakref
-import threading
-import time
-import gc
-from nose.tools import *
 
 
 def hexlify(data):
@@ -33,8 +37,9 @@ def hexlify(data):
     chunks = []
     for i in range(0, len(data), 8):
         part = data[i : min(i + 8, len(data))]
-        chunks.append(b':'.join([binascii.hexlify(part[i : i+1]) for i in range(len(part))]))
+        chunks.append(b':'.join([binascii.hexlify(part[i : i + 1]) for i in range(len(part))]))
     return b' '.join(chunks)
+
 
 def encode_be(size, value):
     """Encodes `value` as big-endian in `size` bytes"""
@@ -45,7 +50,7 @@ def encode_be(size, value):
 
 class Flavour(spead2.Flavour):
     def __init__(self, version, item_pointer_bits, heap_address_bits, bug_compat=0):
-        super(Flavour, self).__init__(version, item_pointer_bits, heap_address_bits, bug_compat)
+        super().__init__(version, item_pointer_bits, heap_address_bits, bug_compat)
 
     def make_header(self, num_items):
         address_size = self.heap_address_bits // 8
@@ -83,7 +88,7 @@ class Flavour(spead2.Flavour):
             ans.append(encode_be(8 - self.heap_address_bits // 8, length))
         return b''.join(ans)
 
-    def items_to_bytes(self, items, descriptors=None, max_packet_size=1500):
+    def items_to_bytes(self, items, descriptors=None, max_packet_size=1500, repeat_pointers=False):
         if descriptors is None:
             descriptors = items
         heap = send.Heap(self)
@@ -91,6 +96,7 @@ class Flavour(spead2.Flavour):
             heap.add_descriptor(descriptor)
         for item in items:
             heap.add_item(item)
+        heap.repeat_pointers = repeat_pointers
         gen = send.PacketGenerator(heap, 0x123456, max_packet_size)
         return list(gen)
 
@@ -103,7 +109,7 @@ def offset_generator(fields):
         yield offset
 
 
-class TestEncode(object):
+class TestEncode:
     """Test heap encoding of various data"""
 
     def __init__(self):
@@ -133,7 +139,7 @@ class TestEncode(object):
         heap = send.Heap(self.flavour)
         heap.add_item(item)
         del item
-        packets = list(send.PacketGenerator(heap, 0x123456, 1472))
+        packets = list(send.PacketGenerator(heap, 0x123456, 1472))   # noqa: F841
         assert_is_not_none(weak())
         del heap
         # pypy needs multiple gc passes to wind it all up
@@ -310,7 +316,6 @@ class TestEncode(object):
         """Sending a small item with fixed shape must use an immediate."""
         id = 0x2345
         data = 0x7654
-        payload = struct.pack('>I', data)
         expected = [
             b''.join([
                 self.flavour.make_header(6),
@@ -352,6 +357,18 @@ class TestEncode(object):
         packet = self.flavour.items_to_bytes([item], [])
         assert_equal(hexlify(expected), hexlify(packet))
 
+    def test_numpy_zero_length(self):
+        """A zero-length numpy type raises :exc:`ValueError`"""
+        with assert_raises(ValueError):
+            spead2.Item(id=0x2345, name='name', description='description',
+                        shape=(), dtype=np.str_)
+
+    def test_fallback_zero_length(self):
+        """A zero-length type raises :exc:`ValueError`"""
+        with assert_raises(ValueError):
+            spead2.Item(id=0x2345, name='name', description='description',
+                        shape=(), format=[('u', 0)])
+
     def test_start(self):
         """Tests sending a start-of-stream marker."""
         expected = [
@@ -390,8 +407,43 @@ class TestEncode(object):
         packet = list(send.PacketGenerator(heap, 0x123456, 1500))
         assert_equal(hexlify(expected), hexlify(packet))
 
+    def test_replicate_pointers(self):
+        """Tests sending a heap with replicate_pointers set to true"""
+        id = 0x2345
+        data = np.arange(32, dtype=np.uint8)
+        item1 = spead2.Item(id=id, name='item1', description='addressed item',
+                            shape=data.shape, dtype=data.dtype, value=data)
+        item2 = spead2.Item(id=id + 1, name='item2', description='inline item',
+                            shape=(), format=[('u', self.flavour.heap_address_bits)],
+                            value=0xdeadbeef)
+        expected = [
+            b''.join([
+                self.flavour.make_header(6),
+                self.flavour.make_immediate(spead2.HEAP_CNT_ID, 0x123456),
+                self.flavour.make_immediate(spead2.HEAP_LENGTH_ID, 32),
+                self.flavour.make_immediate(spead2.PAYLOAD_OFFSET_ID, 0),
+                self.flavour.make_immediate(spead2.PAYLOAD_LENGTH_ID, 16),
+                self.flavour.make_address(id, 0),
+                self.flavour.make_immediate(id + 1, 0xdeadbeef),
+                data.tobytes()[0:16]
+            ]),
+            b''.join([
+                self.flavour.make_header(6),
+                self.flavour.make_immediate(spead2.HEAP_CNT_ID, 0x123456),
+                self.flavour.make_immediate(spead2.HEAP_LENGTH_ID, 32),
+                self.flavour.make_immediate(spead2.PAYLOAD_OFFSET_ID, 16),
+                self.flavour.make_immediate(spead2.PAYLOAD_LENGTH_ID, 16),
+                self.flavour.make_address(id, 0),
+                self.flavour.make_immediate(id + 1, 0xdeadbeef),
+                data.tobytes()[16:32]
+            ])
+        ]
+        packets = self.flavour.items_to_bytes([item1, item2], [], max_packet_size=72,
+                                              repeat_pointers=True)
+        assert_equal(hexlify(expected), hexlify(packets))
 
-class TestStream(object):
+
+class TestStream:
     def setup(self):
         # A slow stream, so that we can test overflowing the queue
         self.flavour = Flavour(4, 64, 48, 0)
@@ -434,7 +486,7 @@ class TestStream(object):
         """An explicit set heap ID must be respected, and not increment the
         implicit sequence.
 
-        The implicit sequencing is also tested.
+        The implicit sequencing is also tested, including wrapping
         """
         ig = send.ItemGroup(flavour=self.flavour)
         self.stream.send_heap(ig.get_start())
@@ -442,30 +494,40 @@ class TestStream(object):
         self.stream.send_heap(ig.get_start())
         self.stream.send_heap(ig.get_start(), 0x9876543210ab)
         self.stream.send_heap(ig.get_start())
-        expected_cnts = [1, 0x1111111111, 0x9876543210ab, 0x2345623456]
+        self.stream.set_cnt_sequence(2**48 - 1, 1)
+        self.stream.send_heap(ig.get_start())
+        self.stream.send_heap(ig.get_start())
+        expected_cnts = [1, 0x1111111111, 0x9876543210ab, 0x2345623456,
+                         2**48 - 1, 0]
         expected = b''
         for cnt in expected_cnts:
             expected = b''.join([
-                    expected,
-                    self.flavour.make_header(6),
-                    self.flavour.make_immediate(spead2.HEAP_CNT_ID, cnt),
-                    self.flavour.make_immediate(spead2.HEAP_LENGTH_ID, 1),
-                    self.flavour.make_immediate(spead2.PAYLOAD_OFFSET_ID, 0),
-                    self.flavour.make_immediate(spead2.PAYLOAD_LENGTH_ID, 1),
-                    self.flavour.make_immediate(spead2.STREAM_CTRL_ID, spead2.CTRL_STREAM_START),
-                    self.flavour.make_address(spead2.NULL_ID, 0),
-                    struct.pack('B', 0)
-                ])
+                expected,
+                self.flavour.make_header(6),
+                self.flavour.make_immediate(spead2.HEAP_CNT_ID, cnt),
+                self.flavour.make_immediate(spead2.HEAP_LENGTH_ID, 1),
+                self.flavour.make_immediate(spead2.PAYLOAD_OFFSET_ID, 0),
+                self.flavour.make_immediate(spead2.PAYLOAD_LENGTH_ID, 1),
+                self.flavour.make_immediate(spead2.STREAM_CTRL_ID, spead2.CTRL_STREAM_START),
+                self.flavour.make_address(spead2.NULL_ID, 0),
+                struct.pack('B', 0)
+            ])
         assert_equal(hexlify(expected), hexlify(self.stream.getvalue()))
 
+    def test_invalid_cnt(self):
+        """An explicit heap ID that overflows must raise an error."""
+        ig = send.ItemGroup(flavour=self.flavour)
+        with assert_raises(IOError):
+            self.stream.send_heap(ig.get_start(), 2**48)
 
-class TestTcpStream(object):
+
+class TestTcpStream:
     def test_failed_connect(self):
         with assert_raises(IOError):
             send.TcpStream(spead2.ThreadPool(), '127.0.0.1', 8887)
 
 
-class TestInprocStream(object):
+class TestInprocStream:
     def setup(self):
         self.flavour = Flavour(4, 64, 48, 0)
         self.queue = spead2.InprocQueue()

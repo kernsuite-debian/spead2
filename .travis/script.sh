@@ -1,25 +1,17 @@
 #!/bin/bash
 set -e -v
 
-if [ "$TEST_PYTHON" = "yes" ]; then
-    set +v
-    source venv/bin/activate
-    set -v
-    ./bootstrap.sh
-else
-    ./bootstrap.sh --no-python
-fi
-
-if [ "$NETMAP" = "yes" ]; then
-    export CPATH="$PWD/netmap/sys"
-fi
+set +v
+source venv/bin/activate
+set -v
+./bootstrap.sh
 
 if [ "$TEST_CXX" = "yes" ]; then
     mkdir -p build
     pushd build
     ../configure \
-        --with-netmap="${NETMAP:-no}" \
         --with-recvmmsg="${RECVMMSG:-no}" \
+        --with-sendmmsg="${SENDMMSG:-no}" \
         --with-eventfd="${EVENTFD:-no}" \
         --with-ibv="${IBV:-no}" \
         --with-pcap="${PCAP:-no}" \
@@ -27,12 +19,14 @@ if [ "$TEST_CXX" = "yes" ]; then
         --disable-optimized \
         CXXFLAGS=-Werror
     make -j4
-    make -j4 check
+    if ! make -j4 check; then
+        cat src/test-suite.log
+        exit 1
+    fi
     popd
 fi
 
 if [ "$TEST_PYTHON" = "yes" ]; then
-    python --version
     if [ "$COVERAGE" = "yes" ]; then
         echo '[build_ext]' > setup.cfg
         echo 'coverage = yes' >> setup.cfg
@@ -50,4 +44,5 @@ if [ "$TEST_PYTHON" = "yes" ]; then
         python -c "import spead2.test.shutdown; spead2.test.shutdown.$test()"
     done
     popd
+    flake8
 fi

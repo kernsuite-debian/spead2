@@ -37,17 +37,24 @@ spead2_bench_LDADD = -lboost_program_options $(LDADD)
 
 spead2_unittest_SOURCES = \
 	unittest_main.cpp \
+	unittest_logging.cpp \
 	unittest_memcpy.cpp \
 	unittest_memory_allocator.cpp \
 	unittest_memory_pool.cpp \
+	unittest_raw_packet.cpp \
 	unittest_recv_live_heap.cpp \
-	unittest_send_heap.cpp
+	unittest_recv_custom_memcpy.cpp \
+	unittest_semaphore.cpp \
+	unittest_send_heap.cpp \
+	unittest_send_streambuf.cpp
 spead2_unittest_CPPFLAGS = -DBOOST_TEST_DYN_LINK $(AM_CPPFLAGS)
 spead2_unittest_LDADD = -lboost_unit_test_framework $(LDADD)
 
 libspead2_a_SOURCES = \
 	common_flavour.cpp \
 	common_ibv.cpp \
+	common_ibv_loader.cpp \
+	common_ibv_loader_utils.cpp \
 	common_inproc.cpp \
 	common_logging.cpp \
 	common_memcpy.cpp \
@@ -61,7 +68,6 @@ libspead2_a_SOURCES = \
 	recv_inproc.cpp \
 	recv_live_heap.cpp \
 	recv_mem.cpp \
-	recv_netmap.cpp \
 	recv_packet.cpp \
 	recv_reader.cpp \
 	recv_ring_stream.cpp \
@@ -70,6 +76,7 @@ libspead2_a_SOURCES = \
 	recv_udp_base.cpp \
 	recv_udp.cpp \
 	recv_udp_ibv.cpp \
+	recv_udp_ibv_mprq.cpp \
 	recv_udp_pcap.cpp \
 	send_heap.cpp \
 	send_inproc.cpp \

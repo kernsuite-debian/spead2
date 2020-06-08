@@ -1,4 +1,4 @@
-# Copyright 2015 SKA South Africa
+# Copyright 2015, 2019 SKA South Africa
 #
 # This program is free software: you can redistribute it and/or modify it under
 # the terms of the GNU Lesser General Public License as published by the Free
@@ -13,9 +13,15 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+import numbers as _numbers
+import logging
+import struct
+
+import numpy as _np
+
 import spead2._spead2
-from spead2._spead2 import (
-    Flavour, ThreadPool, Stopped, Empty, Stopped,
+from spead2._spead2 import (             # noqa: F401
+    Flavour, ThreadPool, Stopped, Empty,
     MemoryAllocator, MmapAllocator, MemoryPool, InprocQueue,
     BUG_COMPAT_DESCRIPTOR_WIDTHS,
     BUG_COMPAT_SHAPE_BIT_1,
@@ -40,11 +46,11 @@ from spead2._spead2 import (
     CTRL_DESCRIPTOR_UPDATE,
     MEMCPY_STD,
     MEMCPY_NONTEMPORAL)
-import numbers as _numbers
-import numpy as _np
-import logging
-import six
-from spead2._version import __version__
+try:
+    from spead2._spead2 import IbvContext      # noqa: F401
+except ImportError:
+    pass
+from spead2._version import __version__       # noqa: F401
 
 
 _logger = logging.getLogger(__name__)
@@ -53,16 +59,6 @@ _UNRESERVED_ID = 0x1000      #: First ID that can be auto-allocated
 _FASTPATH_NONE = 0
 _FASTPATH_IMMEDIATE = 1
 _FASTPATH_NUMPY = 2
-
-
-if six.PY2:
-    def _bytes_to_str_ascii(b):
-        b.decode('ascii')  # Just to check validity, throw away unicode object
-        return b
-else:
-    # Python 3
-    def _bytes_to_str_ascii(b):
-        return b.decode('ascii')
 
 
 def _shape_elements(shape):
@@ -91,16 +87,18 @@ def parse_range_list(ranges):
     return out
 
 
-class Descriptor(object):
+class Descriptor:
     """Metadata for a SPEAD item.
 
-    There are a number of restrictions in the way the parameters combine,
-    which will cause `ValueError` to be raised if violated:
+    There are a number of restrictions on the parameters, which will cause
+    `ValueError` to be raised if violated:
 
     - At most one element of `shape` can be `None`.
     - Exactly one of `dtype` and `format` must be non-`None`.
     - If `dtype` is specified, `shape` cannot have any unknown dimensions.
     - If `format` is specified, `order` must be 'C'
+    - If `dtype` is specified, it cannot contain objects, and must have
+      positive size.
 
     Parameters
     ----------
@@ -129,9 +127,11 @@ class Descriptor(object):
         if dtype is not None:
             dtype = _np.dtype(dtype)
             if dtype.hasobject:
-                raise TypeError('Cannot use dtype that has reference-counted objects')
+                raise ValueError('Cannot use dtype that has reference-counted objects')
             if format is not None:
                 raise ValueError('Only one of dtype and format can be specified')
+            if dtype.itemsize == 0:
+                raise ValueError('Cannot use zero-sized dtype')
             if unknowns > 0:
                 raise ValueError('Cannot have unknown dimensions when using numpy descriptor')
             self._internal_dtype = dtype
@@ -168,7 +168,7 @@ class Descriptor(object):
             d = _np.lib.utils.safe_eval(header)
         except SyntaxError as e:
             msg = "Cannot parse descriptor: %r\nException: %r"
-            raise ValueError(msg % (header, e))
+            raise ValueError(msg % (header, e)) from e
         if not isinstance(d, dict):
             msg = "Descriptor is not a dictionary: %r"
             raise ValueError(msg % d)
@@ -189,15 +189,15 @@ class Descriptor(object):
             dtype = _np.dtype(d['descr'])
         except TypeError as e:
             msg = "descr is not a valid dtype descriptor: %r"
-            raise ValueError(msg % (d['descr'],))
+            raise ValueError(msg % (d['descr'],)) from e
         order = 'F' if d['fortran_order'] else 'C'
         return d['shape'], order, dtype
 
     @classmethod
     def _make_numpy_header(self, shape, dtype, order):
         return "{{'descr': {!r}, 'fortran_order': {!r}, 'shape': {!r}}}".format(
-                _np.lib.format.dtype_to_descr(dtype), order == 'F',
-                tuple(shape))
+            _np.lib.format.dtype_to_descr(dtype), order == 'F',
+            tuple(shape))
 
     @classmethod
     def _parse_format(cls, fmt):
@@ -213,8 +213,11 @@ class Descriptor(object):
         if not fmt:
             raise ValueError('empty format')
         for code, length in fmt:
-            if length == 0:
-                raise ValueError('zero-length field (bug_compat mismatch?)')
+            if length <= 0:
+                if length == 0:
+                    raise ValueError('zero-length field (bug_compat mismatch?)')
+                else:
+                    raise ValueError('negative-length field')
             if ((code in ('u', 'i') and length in (8, 16, 32, 64)) or
                     (code == 'f' and length in (32, 64))):
                 fields.append('>' + code + str(length // 8))
@@ -251,7 +254,7 @@ class Descriptor(object):
         is best not to send them at all.
         """
         return not self.is_variable_size() and (
-                self.dtype is not None or self.itemsize_bits % 8 == 0)
+            self.dtype is not None or self.itemsize_bits % 8 == 0)
 
     def dynamic_shape(self, max_elements):
         """Determine the dynamic shape, given incoming data that is big enough
@@ -290,9 +293,8 @@ class Descriptor(object):
         dtype = None
         format = None
         if raw_descriptor.numpy_header:
-            header = _bytes_to_str_ascii(raw_descriptor.numpy_header)
-            shape, order, dtype = \
-                    cls._parse_numpy_header(header)
+            header = raw_descriptor.numpy_header.decode('ascii')
+            shape, order, dtype = cls._parse_numpy_header(header)
             if flavour.bug_compat & BUG_COMPAT_SWAP_ENDIAN:
                 dtype = dtype.newbyteorder()
         else:
@@ -300,10 +302,10 @@ class Descriptor(object):
             order = 'C'
             format = raw_descriptor.format
         return cls(
-                raw_descriptor.id,
-                _bytes_to_str_ascii(raw_descriptor.name),
-                _bytes_to_str_ascii(raw_descriptor.description),
-                shape, dtype, order, format)
+            raw_descriptor.id,
+            raw_descriptor.name.decode('ascii'),
+            raw_descriptor.description.decode('ascii'),
+            shape, dtype, order, format)
 
     def to_raw(self, flavour):
         raw = spead2._spead2.RawDescriptor()
@@ -316,7 +318,8 @@ class Descriptor(object):
                 dtype = self.dtype.newbyteorder()
             else:
                 dtype = self.dtype
-            raw.numpy_header = self._make_numpy_header(self.shape, dtype, self.order).encode('ascii')
+            raw.numpy_header = self._make_numpy_header(
+                self.shape, dtype, self.order).encode('ascii')
         else:
             raw.format = self.format
         return raw
@@ -333,7 +336,7 @@ class Item(Descriptor):
 
     def __init__(self, *args, **kw):
         value = kw.pop('value', None)
-        super(Item, self).__init__(*args, **kw)
+        super().__init__(*args, **kw)
         self._value = value
         self.version = 1   #: Version number
 
@@ -428,16 +431,16 @@ class Item(Descriptor):
                 elif code == 'b':
                     field = bool(raw)
                 elif code == 'c':
-                    field = six.int2byte(raw)
+                    field = struct.pack('B', raw)
                 elif code == 'f':
                     if length == 32:
                         field = _np.uint32(raw).view(_np.float32)
                     elif length == 64:
                         field = _np.uint64(raw).view(_np.float64)
                     else:
-                        raise ValueError('unhandled float length {0}'.format((code, length)))
+                        raise ValueError('unhandled float length {}'.format((code, length)))
                 else:
-                    raise ValueError('unhandled format {0}'.format((code, length)))
+                    raise ValueError('unhandled format {}'.format((code, length)))
                 fields.append(field)
             if len(fields) == 1:
                 ans = fields[0]
@@ -476,12 +479,12 @@ class Item(Descriptor):
                     elif length == 64:
                         raw = _np.float64(field).view(_np.uint64)
                     else:
-                        raise ValueError('unhandled float length {0}'.format((code, length)))
+                        raise ValueError('unhandled float length {}'.format((code, length)))
                 else:
-                    raise ValueError('unhandled format {0}'.format((code, length)))
+                    raise ValueError('unhandled format {}'.format((code, length)))
                 gen.send((raw, length))
 
-    def set_from_raw(self, raw_item):
+    def set_from_raw(self, raw_item, new_order='='):
         raw_value = _np.array(raw_item, _np.uint8, copy=False)
         if self._fastpath == _FASTPATH_NUMPY:
             max_elements = raw_value.shape[0] // self._internal_dtype.itemsize
@@ -498,8 +501,9 @@ class Item(Descriptor):
             else:
                 array1d = raw_value[:size_bytes]
             array1d = array1d.view(dtype=self._internal_dtype)
-            # Force to native endian
-            array1d = array1d.astype(self._internal_dtype.newbyteorder('='), casting='equiv', copy=False)
+            # Force the byte order if requested
+            array1d = array1d.astype(self._internal_dtype.newbyteorder(new_order),
+                                     casting='equiv', copy=False)
             value = _np.reshape(array1d, shape, self.order)
         elif (self._fastpath == _FASTPATH_IMMEDIATE and
                 raw_item.is_immediate and
@@ -532,7 +536,7 @@ class Item(Descriptor):
             value = value[()]
         elif len(self.shape) == 1 and self.format == [('c', 8)]:
             # Convert array of characters to a string
-            value = _bytes_to_str_ascii(b''.join(value))
+            value = b''.join(value).decode('ascii')
         self.value = value
 
     def _num_elements(self):
@@ -573,12 +577,11 @@ class Item(Descriptor):
         value = self.value
         if value is None:
             raise ValueError('Cannot send a value of None')
-        if (isinstance(value, (six.binary_type, six.text_type)) and
-                len(self.shape) == 1):
+        if isinstance(value, (bytes, str)) and len(self.shape) == 1:
             # This is complicated by Python 3 not providing a simple way to
             # turn a bytes object into a list of one-byte objects, the way
             # list(str) does.
-            value = [self.value[i : i+1] for i in range(len(self.value))]
+            value = [self.value[i : i + 1] for i in range(len(self.value))]
         value = _np.array(value, dtype=self._internal_dtype, order=self.order, copy=False)
         if not self.compatible_shape(value.shape):
             raise ValueError('Value has shape {}, expected {}'.format(value.shape, self.shape))
@@ -612,7 +615,7 @@ class Item(Descriptor):
             return value
 
 
-class ItemGroup(object):
+class ItemGroup:
     """
     Items are collected into sets called *item groups*, which can be indexed by
     either item ID or item name.
@@ -649,12 +652,12 @@ class ItemGroup(object):
 
         # Check if this is just the same thing
         if (old is not None and
-            old.name == item.name and
-            old.description == item.description and
-            old.shape == item.shape and
-            old.dtype == item.dtype and
-            old.order == item.order and
-            old.format == item.format):
+                old.name == item.name and
+                old.description == item.description and
+                old.shape == item.shape and
+                old.dtype == item.dtype and
+                old.order == item.order and
+                old.format == item.format):
             # Descriptor is the same, so just transfer the value. If the value
             # is None, then we've only been given a descriptor to add.
             if item.value is not None:
@@ -734,13 +737,18 @@ class ItemGroup(object):
         """Number of items"""
         return len(self._by_name)
 
-    def update(self, heap):
+    def update(self, heap, new_order='='):
         """Update the item descriptors and items from an incoming heap.
 
         Parameters
         ----------
         heap : :class:`spead2.recv.Heap`
             Incoming heap
+        new_order : str
+            Byte ordering to coerce new byte arrays into. The default is to
+            force arrays to native byte order. Use ``'|'`` to keep whatever
+            byte order was in the heap. See :meth:`np.dtype.newbyteorder` for
+            the full list of options.
 
         Returns
         -------
@@ -759,7 +767,7 @@ class ItemGroup(object):
             except KeyError:
                 _logger.warning('Item with ID %#x received but there is no descriptor', raw_item.id)
             else:
-                item.set_from_raw(raw_item)
+                item.set_from_raw(raw_item, new_order=new_order)
                 item.version += 1
                 updated_items[item.name] = item
         return updated_items

@@ -1,4 +1,4 @@
-# Copyright 2016, 2017 SKA South Africa
+# Copyright 2016, 2017, 2019 SKA South Africa
 #
 # This program is free software: you can redistribute it and/or modify it under
 # the terms of the GNU Lesser General Public License as published by the Free
@@ -73,6 +73,23 @@ SPEAD2_ARG_WITH(
 )
 
 SPEAD2_ARG_WITH(
+    [ibv_mprq],
+    [AS_HELP_STRING([--without-ibv-mprq], [Do not use multi-packet receive queues, even if detected])],
+    [SPEAD2_USE_IBV_MPRQ],
+    [SPEAD2_USE_IBV_MPRQ=1
+     SPEAD2_CHECK_FEATURE(
+        [ibv_mprq], [multi-packet receive queue], [infiniband/verbs_exp.h], [ibverbs],
+        [ibv_exp_cq_family_v1 *cq_intf;
+         ibv_exp_wq_family *wq_intf;
+         ibv_exp_qp_init_attr attr;
+         ibv_exp_query_intf(NULL, NULL, NULL);
+         ibv_exp_create_wq(NULL, NULL);
+         ibv_exp_create_rwq_ind_table(NULL, NULL);],
+        [], [SPEAD2_USE_IBV_MPRQ=0])
+    ]
+)
+
+SPEAD2_ARG_WITH(
     [pcap],
     [AS_HELP_STRING([--without-pcap], [Do not use pcap, even if detected])],
     [SPEAD2_USE_PCAP],
@@ -85,24 +102,16 @@ SPEAD2_ARG_WITH(
 
 
 SPEAD2_ARG_WITH(
-    [netmap],
-    [AS_HELP_STRING([--without-netmap], [Do not use netmap, even if detected])],
-    [SPEAD2_USE_NETMAP],
-    [AC_LANG_PUSH(C)      # netmap_user.h doesn't do extern "C"
-     SPEAD2_CHECK_FEATURE(
-        [header_net_netmap_user_h], [netmap],
-        [stddef.h net/netmap_user.h], [], [nm_open(NULL, NULL, 0, NULL)],
-        [SPEAD2_USE_NETMAP=1], [], [#define NETMAP_WITH_LIBS]
-     )
-     AC_LANG_POP
-    ]
-)
-
-SPEAD2_ARG_WITH(
     [recvmmsg],
     [AS_HELP_STRING([--without-recvmmsg], [Do not use recvmmsg system call])],
     [SPEAD2_USE_RECVMMSG],
     [AC_CHECK_FUNC([recvmmsg], [SPEAD2_USE_RECVMMSG=1], [])])
+
+SPEAD2_ARG_WITH(
+    [sendmmsg],
+    [AS_HELP_STRING([--without-sendmmsg], [Do not use sendmmsg system call])],
+    [SPEAD2_USE_SENDMMSG],
+    [AC_CHECK_FUNC([sendmmsg], [SPEAD2_USE_SENDMMSG=1], [])])
 
 SPEAD2_ARG_WITH(
     [eventfd],
@@ -155,8 +164,8 @@ SPEAD2_ARG_WITH(
 
 ### Determine libraries to link against
 
-LIBS="-lboost_system -lpthread"
-AS_IF([test "x$SPEAD2_USE_IBV" = "x1"], [LIBS="-lrdmacm -libverbs $LIBS"])
+LIBS="-lboost_system -lpthread -ldl"
+AS_IF([test "x$SPEAD2_USE_IBV" = "x1"], [LIBS="$LIBS"])
 AS_IF([test "x$SPEAD2_USE_PCAP" = "x1"], [LIBS="-lpcap $LIBS"])
 
 ### Build variants

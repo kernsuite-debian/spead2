@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright 2015, 2017 SKA South Africa
+# Copyright 2015, 2017, 2019 SKA South Africa
 #
 # This program is free software: you can redistribute it and/or modify it under
 # the terms of the GNU Lesser General Public License as published by the Free
@@ -18,13 +18,9 @@
 from __future__ import print_function
 from setuptools import setup, find_packages, Extension
 from setuptools.command.build_ext import build_ext
-from setuptools.command.build_py import build_py
 import glob
-import sys
 import os
 import os.path
-import ctypes.util
-import re
 import subprocess
 
 
@@ -38,51 +34,41 @@ def find_version():
     return globals_['__version__']
 
 
-# Restrict installed modules to those appropriate to the Python version
-class BuildPy(build_py):
-    def find_package_modules(self, package, package_dir):
-        # distutils uses old-style classes, so no super
-        modules = build_py.find_package_modules(self, package, package_dir)
-        if sys.version_info < (3, 4):
-            modules = [m for m in modules if not m[1].endswith('asyncio')]
-        if sys.version_info < (3, 5):
-            modules = [m for m in modules if not m[1].endswith('py35')]
-        if sys.version_info >= (3, 7):
-            modules = [m for m in modules if not m[1].endswith('trollius')]
-        return modules
-
-
 class BuildExt(build_ext):
     user_options = build_ext.user_options + [
         ('coverage', None,
-         "build with GCC --coverage option")
+         'build with GCC --coverage option'),
+        ('split-debug=', None,
+         'write debug symbols to a separate directory')
     ]
     boolean_options = build_ext.boolean_options + ['coverage']
 
     def initialize_options(self):
         build_ext.initialize_options(self)
-        self.coverage = None
+        # setuptools bug causes these to be lost during reinitialization by
+        # ./setup.py develop
+        if not hasattr(self, 'coverage'):
+            self.coverage = None
+        if not hasattr(self, 'split_debug'):
+            self.split_debug = None
 
     def run(self):
         self.mkpath(self.build_temp)
         subprocess.check_call(os.path.abspath('configure'), cwd=self.build_temp)
         # Ugly hack to add libraries conditional on configure result
-        have_ibv = False
         have_pcap = False
         with open(os.path.join(self.build_temp, 'include', 'spead2', 'common_features.h')) as f:
             for line in f:
-                if line.strip() == '#define SPEAD2_USE_IBV 1':
-                    have_ibv = True
                 if line.strip() == '#define SPEAD2_USE_PCAP 1':
                     have_pcap = True
         for extension in self.extensions:
-            if have_ibv:
-                extension.libraries.extend(['rdmacm', 'ibverbs'])
             if have_pcap:
                 extension.libraries.extend(['pcap'])
             if self.coverage:
                 extension.extra_compile_args.extend(['-g', '--coverage'])
                 extension.libraries.extend(['gcov'])
+            if self.split_debug:
+                extension.extra_compile_args.extend(['-g'])
             extension.include_dirs.insert(0, os.path.join(self.build_temp, 'include'))
         # distutils uses old-style classes, so no super
         build_ext.run(self)
@@ -95,7 +81,38 @@ class BuildExt(build_ext):
             pass
         build_ext.build_extensions(self)
 
-# Can't actually install on readthedocs.org because Boost.Python is missing,
+    def build_extension(self, ext):
+        ext_path = self.get_ext_fullpath(ext.name)
+        if self.split_debug:
+            # If the base class decides to skip the link, we'll end up
+            # constructing the .debug file from the already-stripped version of
+            # the library, and it won't have any symbols. So force the link by
+            # removing the output.
+            try:
+                os.remove(ext_path)
+            except OSError:
+                pass
+        build_ext.build_extension(self, ext)
+        if self.split_debug:
+            os.makedirs(self.split_debug, exist_ok=True)
+            basename = os.path.basename(ext_path)
+            debug_path = os.path.join(self.split_debug, basename + '.debug')
+            self.spawn(['objcopy', '--only-keep-debug', '--', ext_path, debug_path])
+            self.spawn(['strip', '--strip-debug', '--', ext_path])
+            old_cwd = os.getcwd()
+            # See the documentation for --add-gnu-debuglink for why it needs to be
+            # run from the directory containing the file.
+            ext_path_abs = os.path.abspath(ext_path)
+            try:
+                os.chdir(self.split_debug)
+                self.spawn(['objcopy', '--add-gnu-debuglink=' + os.path.basename(debug_path),
+                            '--', ext_path_abs])
+            finally:
+                os.chdir(old_cwd)
+            self.spawn(['chmod', '-x', '--', debug_path])
+
+
+# Can't actually install on readthedocs.org because we can't compile,
 # but we need setup.py to still be successful to make the doc build work.
 rtd = os.environ.get('READTHEDOCS') == 'True'
 
@@ -130,40 +147,47 @@ if not rtd:
 else:
     extensions = []
 
+with open(os.path.join(os.path.dirname(__file__), 'README.rst')) as readme_file:
+    readme = readme_file.read()
+
 setup(
     author='Bruce Merry',
     author_email='bmerry@ska.ac.za',
     name='spead2',
     version=find_version(),
     description='High-performance SPEAD implementation',
+    long_description=readme,
     url='https://github.com/ska-sa/spead2',
     license='LGPLv3+',
-    classifiers = [
+    classifiers=[
         'Development Status :: 5 - Production/Stable',
         'Framework :: AsyncIO',
         'Intended Audience :: Developers',
         'License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)',
         'Operating System :: POSIX',
-        'Programming Language :: Python :: 2',
         'Programming Language :: Python :: 3',
         'Topic :: Software Development :: Libraries',
         'Topic :: System :: Networking'],
     ext_package='spead2',
     ext_modules=extensions,
-    cmdclass={'build_ext': BuildExt, 'build_py': BuildPy},
+    cmdclass={'build_ext': BuildExt},
     install_requires=[
-        'numpy>=1.9.2',
-        'six',
-        'trollius; python_version<"3.4"'
+        'numpy>=1.9.2'
     ],
     tests_require=[
         'netifaces',
         'nose',
-        'decorator',
-        'trollius; python_version<"3.7"',
-        'asynctest; python_version>="3.5"'
+        'asynctest'
     ],
+    python_requires='>=3.5',
     test_suite='nose.collector',
     packages=find_packages(),
-    scripts=glob.glob('scripts/*.py')
+    package_data={'': ['py.typed', '*.pyi']},
+    entry_points={
+        'console_scripts': [
+            'spead2_send.py = spead2.tools.send_asyncio:main',
+            'spead2_recv.py = spead2.tools.recv_asyncio:main',
+            'spead2_bench.py = spead2.tools.bench_asyncio:main'
+        ]
+    }
 )

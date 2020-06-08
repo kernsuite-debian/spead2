@@ -112,7 +112,9 @@ it, or repeatedly call :py:meth:`~spead2.recv.Stream.get`.
 
    .. py:method:: add_udp_reader(multicast_group, port, max_size=DEFAULT_UDP_MAX_SIZE, buffer_size=DEFAULT_UDP_BUFFER_SIZE, interface_address)
 
-      Feed data from a UDP port with multicast (IPv4 only).
+      Feed data from a UDP port (IPv4 only). This is intended for use with
+      multicast, but it will also accept a unicast address as long as it is the
+      same as the interface address.
 
       :param str multicast_group: Hostname/IP address of the multicast group to subscribe to
       :param int port: UDP port number
@@ -213,14 +215,18 @@ it, or repeatedly call :py:meth:`~spead2.recv.Stream.get`.
       treatment. Such heaps can then be detected with
       :meth:`~spead2.recv.Heap.is_end_of_stream`.
 
+   .. py:attribute:: allow_unsized_heaps
+
+      By default, spead2 caters for heaps without a `HEAP_LEN` item, and will
+      dynamically extend the memory allocation as data arrives. However, this
+      can be expensive, and ideally senders should include this item. Setting
+      this attribute to ``False`` will cause packets without this item to be
+      rejected.
+
 Asynchronous receive
 ^^^^^^^^^^^^^^^^^^^^
-Asynchronous I/O is supported through Python 3's :py:mod:`asyncio` module, as
-well as through trollius_ (a Python 2 backport). It can be combined with other
-asynchronous I/O frameworks like twisted_ and Tornado_.
-
-The documentation below is for the :py:mod:`asyncio` interface; replace all
-instances of ``asyncio`` with ``trollius`` if you're using trollius.
+Asynchronous I/O is supported through Python's :py:mod:`asyncio` module. It can
+be combined with other asynchronous I/O frameworks like twisted_ and Tornado_.
 
 .. py:class:: spead2.recv.asyncio.Stream(\*args, \*\*kwargs, loop=None)
 
@@ -240,12 +246,11 @@ instances of ``asyncio`` with ``trollius`` if you're using trollius.
 
       :param loop: asyncio event loop to use, overriding constructor.
 
-.. _trollius: http://trollius.readthedocs.io/
 .. _twisted: https://twistedmatrix.com/trac/
 .. _tornado: http://www.tornadoweb.org/en/stable/
 
-When using Python 3.5 or higher, the stream is also asynchronously iterable,
-i.e., can be used in an ``async for`` loop to iterate over the heaps.
+The stream is also asynchronously iterable, i.e., can be used in an ``async
+for`` loop to iterate over the heaps.
 
 .. _py-memory-allocators:
 

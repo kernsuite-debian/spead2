@@ -1,4 +1,4 @@
-/* Copyright 2015 SKA South Africa
+/* Copyright 2015, 2019-2020 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -49,28 +49,6 @@ namespace recv
 
 constexpr std::size_t udp_reader::default_buffer_size;
 
-#if SPEAD2_USE_RECVMMSG
-static boost::asio::ip::udp::socket duplicate_socket(
-    boost::asio::ip::udp::socket &socket)
-{
-    int fd = socket.native_handle();
-    int fd2 = dup(fd);
-    if (fd2 < 0)
-        throw_errno("dup failed");
-    try
-    {
-        boost::asio::ip::udp::socket socket2(
-            socket.get_io_service(), socket.local_endpoint().protocol(), fd2);
-        return socket2;
-    }
-    catch (std::exception)
-    {
-        close(fd2);
-        throw;
-    }
-}
-#endif
-
 static boost::asio::ip::udp::socket bind_socket(
     boost::asio::ip::udp::socket &&socket,
     const boost::asio::ip::udp::endpoint &endpoint,
@@ -87,13 +65,12 @@ udp_reader::udp_reader(
     std::size_t max_size)
     : udp_reader_base(owner), socket(std::move(socket)), max_size(max_size),
 #if SPEAD2_USE_RECVMMSG
-    socket2(socket.get_io_service()),
     buffer(mmsg_count), iov(mmsg_count), msgvec(mmsg_count)
 #else
     buffer(new std::uint8_t[max_size + 1])
 #endif
 {
-    assert(&this->socket.get_io_service() == &get_io_service());
+    assert(socket_uses_io_service(this->socket, get_io_service()));
 #if SPEAD2_USE_RECVMMSG
     for (std::size_t i = 0; i < mmsg_count; i++)
     {
@@ -107,9 +84,6 @@ udp_reader::udp_reader(
     }
 #endif
 
-#if SPEAD2_USE_RECVMMSG
-    socket2 = duplicate_socket(this->socket);
-#endif
     enqueue_receive();
 }
 
@@ -123,21 +97,29 @@ udp_reader::udp_reader(
 {
 }
 
-static boost::asio::ip::udp::socket make_multicast_v4_socket(
+static boost::asio::ip::udp::socket make_bound_v4_socket(
     boost::asio::io_service &io_service,
     const boost::asio::ip::udp::endpoint &endpoint,
     std::size_t buffer_size,
     const boost::asio::ip::address &interface_address)
 {
-    if (!endpoint.address().is_v4() || !endpoint.address().is_multicast())
-        throw std::invalid_argument("endpoint is not an IPv4 multicast address");
     if (!interface_address.is_v4())
         throw std::invalid_argument("interface address is not an IPv4 address");
-    boost::asio::ip::udp::socket socket(io_service, endpoint.protocol());
-    socket.set_option(boost::asio::socket_base::reuse_address(true));
-    socket.set_option(boost::asio::ip::multicast::join_group(
-        endpoint.address().to_v4(), interface_address.to_v4()));
-    return bind_socket(std::move(socket), endpoint, buffer_size);
+    auto ep = endpoint;
+    if (ep.address().is_unspecified())
+        ep.address(interface_address);
+    if (!ep.address().is_v4())
+        throw std::invalid_argument("endpoint is not an IPv4 address");
+    if (!ep.address().is_multicast() && ep.address() != interface_address)
+        throw std::invalid_argument("endpoint is not multicast and does not match interface address");
+    boost::asio::ip::udp::socket socket(io_service, ep.protocol());
+    if (ep.address().is_multicast())
+    {
+        socket.set_option(boost::asio::socket_base::reuse_address(true));
+        socket.set_option(boost::asio::ip::multicast::join_group(
+            ep.address().to_v4(), interface_address.to_v4()));
+    }
+    return bind_socket(std::move(socket), ep, buffer_size);
 }
 
 static boost::asio::ip::udp::socket make_multicast_v6_socket(
@@ -176,7 +158,7 @@ udp_reader::udp_reader(
     std::size_t buffer_size)
     : udp_reader(
         owner,
-        make_socket(owner.get_strand().get_io_service(), endpoint, buffer_size),
+        make_socket(owner.get_io_service(), endpoint, buffer_size),
         max_size)
 {
 }
@@ -189,8 +171,8 @@ udp_reader::udp_reader(
     const boost::asio::ip::address &interface_address)
     : udp_reader(
         owner,
-        make_multicast_v4_socket(owner.get_strand().get_io_service(),
-                                 endpoint, buffer_size, interface_address),
+        make_bound_v4_socket(owner.get_io_service(),
+                             endpoint, buffer_size, interface_address),
         max_size)
 {
 }
@@ -203,7 +185,7 @@ udp_reader::udp_reader(
     unsigned int interface_index)
     : udp_reader(
         owner,
-        make_multicast_v6_socket(owner.get_strand().get_io_service(),
+        make_multicast_v6_socket(owner.get_io_service(),
                                  endpoint, buffer_size, interface_index),
         max_size)
 {
@@ -213,17 +195,17 @@ void udp_reader::packet_handler(
     const boost::system::error_code &error,
     std::size_t bytes_transferred)
 {
+    stream_base::add_packet_state state(get_stream_base());
     if (!error)
     {
-        stream_base::add_packet_state state(get_stream_base());
-        if (get_stream_base().is_stopped())
+        if (state.is_stopped())
         {
             log_info("UDP reader: discarding packet received after stream stopped");
         }
         else
         {
 #if SPEAD2_USE_RECVMMSG
-            int received = recvmmsg(socket2.native_handle(), msgvec.data(), msgvec.size(),
+            int received = recvmmsg(socket.native_handle(), msgvec.data(), msgvec.size(),
                                     MSG_DONTWAIT, nullptr);
             log_debug("recvmmsg returned %1%", received);
             if (received == -1 && errno != EAGAIN && errno != EWOULDBLOCK)
@@ -246,15 +228,12 @@ void udp_reader::packet_handler(
     else if (error != boost::asio::error::operation_aborted)
         log_warning("Error in UDP receiver: %1%", error.message());
 
-    if (!get_stream_base().is_stopped())
+    if (!state.is_stopped())
     {
         enqueue_receive();
     }
     else
     {
-#if SPEAD2_USE_RECVMMSG
-        socket2.close();
-#endif
         stopped();
     }
 }
@@ -269,7 +248,7 @@ void udp_reader::enqueue_receive()
         boost::asio::buffer(buffer.get(), max_size + 1),
 #endif
         endpoint,
-        get_stream().get_strand().wrap(std::bind(&udp_reader::packet_handler, this, _1, _2)));
+        std::bind(&udp_reader::packet_handler, this, _1, _2));
 }
 
 void udp_reader::stop()
@@ -316,7 +295,7 @@ static void init_ibv_override()
                 {
                     ibv_comp_vector = boost::lexical_cast<int>(comp_vector);
                 }
-                catch (boost::bad_lexical_cast)
+                catch (boost::bad_lexical_cast &)
                 {
                     log_warning("SPEAD2_IBV_COMP_VECTOR is not a valid integer, ignoring");
                 }
@@ -332,7 +311,7 @@ std::unique_ptr<reader> reader_factory<udp_reader>::make_reader(
     std::size_t max_size,
     std::size_t buffer_size)
 {
-    if (endpoint.address().is_v4() && endpoint.address().is_multicast())
+    if (endpoint.address().is_v4())
     {
         std::call_once(ibv_once, init_ibv_override);
 #if SPEAD2_USE_IBV
@@ -340,8 +319,8 @@ std::unique_ptr<reader> reader_factory<udp_reader>::make_reader(
         {
             log_info("Overriding reader for %1%:%2% to use ibverbs",
                      endpoint.address().to_string(), endpoint.port());
-            return std::unique_ptr<reader>(new udp_ibv_reader(
-                    owner, endpoint, ibv_interface, max_size, buffer_size, ibv_comp_vector));
+            return reader_factory<udp_ibv_reader>::make_reader(
+                owner, endpoint, ibv_interface, max_size, buffer_size, ibv_comp_vector);
         }
 #endif
     }
@@ -355,7 +334,7 @@ std::unique_ptr<reader> reader_factory<udp_reader>::make_reader(
     std::size_t buffer_size,
     const boost::asio::ip::address &interface_address)
 {
-    if (endpoint.address().is_v4() && endpoint.address().is_multicast())
+    if (endpoint.address().is_v4())
     {
         std::call_once(ibv_once, init_ibv_override);
 #if SPEAD2_USE_IBV
@@ -363,8 +342,8 @@ std::unique_ptr<reader> reader_factory<udp_reader>::make_reader(
         {
             log_info("Overriding reader for %1%:%2% to use ibverbs",
                      endpoint.address().to_string(), endpoint.port());
-            return std::unique_ptr<reader>(new udp_ibv_reader(
-                    owner, endpoint, interface_address, max_size, buffer_size, ibv_comp_vector));
+            return reader_factory<udp_ibv_reader>::make_reader(
+                owner, endpoint, interface_address, max_size, buffer_size, ibv_comp_vector);
         }
 #endif
     }

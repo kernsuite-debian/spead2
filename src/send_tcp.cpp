@@ -27,6 +27,24 @@ namespace spead2
 namespace send
 {
 
+void tcp_stream::async_send_packets()
+{
+    if (!connected.load())
+    {
+        current_packets[0].result = boost::asio::error::not_connected;
+        get_io_service().post([this] { packets_handler(); });
+    }
+    else
+    {
+        auto handler = [this](const boost::system::error_code &ec, std::size_t)
+        {
+            current_packets[0].result = ec;
+            packets_handler();
+        };
+        boost::asio::async_write(socket, current_packets[0].pkt.buffers, handler);
+    }
+}
+
 namespace detail
 {
 
@@ -51,20 +69,22 @@ tcp_stream::tcp_stream(
     io_service_ref io_service,
     boost::asio::ip::tcp::socket &&socket,
     const stream_config &config)
-    : stream_impl(std::move(io_service), config),
+    : stream_impl(std::move(io_service), config, 1),
     socket(std::move(socket)),
     connected(true)
 {
-    if (&get_io_service() != &this->socket.get_io_service())
+    if (!socket_uses_io_service(this->socket, get_io_service()))
         throw std::invalid_argument("I/O service does not match the socket's I/O service");
 }
 
+#if BOOST_VERSION < 107000
 tcp_stream::tcp_stream(
     boost::asio::ip::tcp::socket &&socket,
     const stream_config &config)
-    : tcp_stream(socket.get_io_service(), std::move(socket), config)
+    : tcp_stream(get_socket_io_service(socket), std::move(socket), config)
 {
 }
+#endif
 
 tcp_stream::~tcp_stream()
 {
