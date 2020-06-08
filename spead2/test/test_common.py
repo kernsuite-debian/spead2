@@ -1,4 +1,4 @@
-# Copyright 2015 SKA South Africa
+# Copyright 2015, 2019 SKA South Africa
 #
 # This program is free software: you can redistribute it and/or modify it under
 # the terms of the GNU Lesser General Public License as published by the Free
@@ -16,23 +16,16 @@
 """Tests for parts of spead2 that are shared between send and receive"""
 
 from __future__ import division, print_function
-import spead2
+
 import numpy as np
-import six
-from nose.tools import *
+from nose.tools import (
+    assert_equal, assert_greater, assert_raises, assert_true, assert_false,
+    assert_is, assert_is_not, assert_is_none)
+
+import spead2
 
 
-def assert_equal_typed(expected, actual, msg=None):
-    """Check that expected and actual compare equal *and* have the same type.
-
-    This is used for checking that strings have the correct type (str vs
-    unicode in Python 2, str vs bytes in Python 3).
-    """
-    assert_equal(expected, actual, msg)
-    assert_equal(type(expected), type(actual), msg)
-
-
-class TestParseRangeList(object):
+class TestParseRangeList:
     def test_empty(self):
         assert_equal([], spead2.parse_range_list(''))
 
@@ -40,10 +33,11 @@ class TestParseRangeList(object):
         assert_equal([1, 2, 5], spead2.parse_range_list('1,2,5'))
 
     def test_ranges(self):
-        assert_equal([100, 4, 5, 6, 8, 10, 12, 13], spead2.parse_range_list('100,4-6,8,10-10,12-13'))
+        assert_equal([100, 4, 5, 6, 8, 10, 12, 13],
+                     spead2.parse_range_list('100,4-6,8,10-10,12-13'))
 
 
-class TestThreadPool(object):
+class TestThreadPool:
     """Smoke tests for :py:class:`spead2.ThreadPool`. These are very simple
     tests, because it is not actually possible to check things like the
     thread affinity."""
@@ -52,11 +46,18 @@ class TestThreadPool(object):
         spead2.ThreadPool(4)
 
     def test_affinity(self):
+        spead2.ThreadPool(3, [])
         spead2.ThreadPool(3, [0, 1])
         spead2.ThreadPool(1, [1, 0, 2])
 
+    def test_zero_threads(self):
+        with assert_raises(ValueError):
+            spead2.ThreadPool(0)
+        with assert_raises(ValueError):
+            spead2.ThreadPool(0, [0, 1])
 
-class TestFlavour(object):
+
+class TestFlavour:
     def test_bad_version(self):
         with assert_raises(ValueError):
             spead2.Flavour(3, 64, 40, 0)
@@ -92,7 +93,7 @@ class TestFlavour(object):
         assert_false(flavour1 == flavour3)
 
 
-class TestItem(object):
+class TestItem:
     """Tests for :py:class:`spead2.Item`.
 
     Many of these actually test :py:class:`spead2.Descriptor`, but since the
@@ -103,36 +104,36 @@ class TestItem(object):
         """Using a non-ASCII unicode character raises a
         :py:exc:`UnicodeEncodeError`."""
         item1 = spead2.Item(0x1000, 'name1', 'description',
-            (None,), format=[('c', 8)], value=six.u('\u0200'))
+                            (None,), format=[('c', 8)], value='\u0200')
         item2 = spead2.Item(0x1001, 'name2', 'description2', (),
-            dtype='S5', value=six.u('\u0201'))
+                            dtype='S5', value='\u0201')
         assert_raises(UnicodeEncodeError, item1.to_buffer)
         assert_raises(UnicodeEncodeError, item2.to_buffer)
 
     def test_format_and_dtype(self):
         """Specifying both a format and dtype raises :py:exc:`ValueError`."""
         assert_raises(ValueError, spead2.Item, 0x1000, 'name', 'description',
-            (1, 2), format=[('c', 8)], dtype='S1')
+                      (1, 2), format=[('c', 8)], dtype='S1')
 
     def test_no_format_or_dtype(self):
         """At least one of format and dtype must be specified."""
         assert_raises(ValueError, spead2.Item, 0x1000, 'name', 'description',
-            (1, 2), format=None)
+                      (1, 2), format=None)
 
     def test_invalid_order(self):
         """The `order` parameter must be either 'C' or 'F'."""
         assert_raises(ValueError, spead2.Item, 0x1000, 'name', 'description',
-            (1, 2), np.int32, order='K')
+                      (1, 2), np.int32, order='K')
 
     def test_fortran_fallback(self):
         """The `order` parameter must be either 'C' for legacy formats."""
         assert_raises(ValueError, spead2.Item, 0x1000, 'name', 'description',
-            (1, 2), format=[('u', 32)], order='F')
+                      (1, 2), format=[('u', 32)], order='F')
 
     def test_empty_format(self):
         """Format must not be empty"""
         assert_raises(ValueError, spead2.Item, 0x1000, 'name', 'description',
-            (1, 2), format=[])
+                      (1, 2), format=[])
 
     def test_assign_none(self):
         """Changing a value back to `None` raises :py:exc:`ValueError`."""
@@ -143,27 +144,27 @@ class TestItem(object):
     def test_multiple_unknown(self):
         """Multiple unknown dimensions are not allowed."""
         assert_raises(ValueError, spead2.Item, 0x1000, 'name', 'description',
-            (5, None, 3, None), format=[('u', 32)])
+                      (5, None, 3, None), format=[('u', 32)])
 
     def test_numpy_unknown(self):
         """Unknown dimensions are not permitted when using a numpy descriptor"""
         assert_raises(ValueError, spead2.Item, 0x1000, 'name', 'description',
-            (5, None), np.int32)
+                      (5, None), np.int32)
 
     def test_nonascii_name(self):
         """Name with non-ASCII characters must fail"""
         with assert_raises(UnicodeEncodeError):
-            item = spead2.Item(0x1000, six.u('\u0200'), 'description', (), np.int32)
+            item = spead2.Item(0x1000, '\u0200', 'description', (), np.int32)
             item.to_raw(spead2.Flavour())
 
     def test_nonascii_description(self):
         """Description with non-ASCII characters must fail"""
         with assert_raises(UnicodeEncodeError):
-            item = spead2.Item(0x1000, 'name', six.u('\u0200'), (), np.int32)
+            item = spead2.Item(0x1000, 'name', '\u0200', (), np.int32)
             item.to_raw(spead2.Flavour())
 
 
-class TestItemGroup(object):
+class TestItemGroup:
     """Tests for :py:class:`spead2.ItemGroup`"""
 
     def test_allocate_id(self):

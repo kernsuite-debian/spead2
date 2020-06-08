@@ -201,12 +201,11 @@ CTAGS = ctags
 CSCOPE = cscope
 DIST_SUBDIRS = $(SUBDIRS)
 am__DIST_COMMON = $(srcdir)/Makefile.in $(srcdir)/spead2.pc.in \
-	$(top_srcdir)/build-aux/compile \
 	$(top_srcdir)/build-aux/install-sh \
 	$(top_srcdir)/build-aux/missing \
 	$(top_srcdir)/include/spead2/common_features.h.in COPYING \
-	COPYING.LESSER INSTALL build-aux/compile build-aux/depcomp \
-	build-aux/install-sh build-aux/missing
+	COPYING.LESSER INSTALL TODO build-aux/compile \
+	build-aux/depcomp build-aux/install-sh build-aux/missing
 DISTFILES = $(DIST_COMMON) $(DIST_SOURCES) $(TEXINFOS) $(EXTRA_DIST)
 distdir = $(PACKAGE)-$(VERSION)
 top_distdir = $(distdir)
@@ -257,9 +256,6 @@ AUTOCONF = @AUTOCONF@
 AUTOHEADER = @AUTOHEADER@
 AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
-CC = @CC@
-CCDEPMODE = @CCDEPMODE@
-CFLAGS = @CFLAGS@
 CPPFLAGS = @CPPFLAGS@
 CXX = @CXX@
 CXXDEPMODE = @CXXDEPMODE@
@@ -297,19 +293,19 @@ SHELL = @SHELL@
 SPEAD2_USE_EVENTFD = @SPEAD2_USE_EVENTFD@
 SPEAD2_USE_IBV = @SPEAD2_USE_IBV@
 SPEAD2_USE_IBV_EXP = @SPEAD2_USE_IBV_EXP@
+SPEAD2_USE_IBV_MPRQ = @SPEAD2_USE_IBV_MPRQ@
 SPEAD2_USE_MOVNTDQ = @SPEAD2_USE_MOVNTDQ@
-SPEAD2_USE_NETMAP = @SPEAD2_USE_NETMAP@
 SPEAD2_USE_PCAP = @SPEAD2_USE_PCAP@
 SPEAD2_USE_POSIX_SEMAPHORES = @SPEAD2_USE_POSIX_SEMAPHORES@
 SPEAD2_USE_PTHREAD_SETAFFINITY_NP = @SPEAD2_USE_PTHREAD_SETAFFINITY_NP@
 SPEAD2_USE_RECVMMSG = @SPEAD2_USE_RECVMMSG@
+SPEAD2_USE_SENDMMSG = @SPEAD2_USE_SENDMMSG@
 STRIP = @STRIP@
 VERSION = @VERSION@
 abs_builddir = @abs_builddir@
 abs_srcdir = @abs_srcdir@
 abs_top_builddir = @abs_top_builddir@
 abs_top_srcdir = @abs_top_srcdir@
-ac_ct_CC = @ac_ct_CC@
 ac_ct_CXX = @ac_ct_CXX@
 am__include = @am__include@
 am__leading_dot = @am__leading_dot@

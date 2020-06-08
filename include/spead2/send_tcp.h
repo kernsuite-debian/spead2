@@ -55,14 +55,7 @@ private:
     /// Whether the underlying socket is already connected or not
     std::atomic<bool> connected{false};
 
-    template<typename Handler>
-    void async_send_packet(const packet &pkt, Handler &&handler)
-    {
-        if (!connected.load())
-            handler(boost::asio::error::not_connected, 0);
-        else
-            boost::asio::async_write(socket, pkt.buffers, std::move(handler));
-    }
+    void async_send_packets();
 
 public:
     /// Socket send buffer size, if none is explicitly passed to the constructor
@@ -95,11 +88,11 @@ public:
         const stream_config &config = stream_config(),
         std::size_t buffer_size = default_buffer_size,
         const boost::asio::ip::address &interface_address = boost::asio::ip::address())
-        : stream_impl(std::move(io_service), config),
+        : stream_impl(std::move(io_service), config, 1),
         socket(detail::make_socket(get_io_service(), endpoint, buffer_size, interface_address))
     {
         socket.async_connect(endpoint,
-            [this, connect_handler] (boost::system::error_code ec)
+            [this, connect_handler] (const boost::system::error_code &ec)
             {
                 if (!ec)
                     connected.store(true);
@@ -107,12 +100,18 @@ public:
             });
     }
 
+#if BOOST_VERSION < 107000
     /**
      * Constructor using an existing socket. The socket must be connected.
+     *
+     * @deprecated This constructor is not supported from Boost 1.70 onwards,
+     * and will be removed entirely in a future release. Use the constructor with
+     * an explicit @a io_service.
      */
     tcp_stream(
         boost::asio::ip::tcp::socket &&socket,
         const stream_config &config = stream_config());
+#endif
 
     /**
      * Constructor using an existing socket. The socket must be connected.

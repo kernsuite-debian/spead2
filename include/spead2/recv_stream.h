@@ -1,4 +1,4 @@
-/* Copyright 2015, 2017, 2018 SKA South Africa
+/* Copyright 2015, 2017-2019 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -36,6 +36,7 @@
 #include <spead2/recv_reader.h>
 #include <spead2/common_memory_pool.h>
 #include <spead2/common_bind.h>
+#include <spead2/common_semaphore.h>
 
 namespace spead2
 {
@@ -126,9 +127,31 @@ struct stream_stats
  * lead to all heaps in the same bucket. So rather than using
  * std::unordered_map, we use a custom hash table implementation (with a
  * fixed number of buckets).
+ *
+ * @internal
+ *
+ * Avoiding deadlocks requires a careful design with several mutexes. It's
+ * governed by the requirement that @ref heap_ready may block indefinitely, and
+ * this must not block other functions. Thus, several mutexes are involved:
+ *   - @ref queue_mutex: protects values only used by @ref add_packet. This
+ *     may be locked for long periods.
+ *   - @ref config_mutex: protects configuration. The protected values are
+ *     copied into @ref add_packet_state prior to adding a batch of packets.
+ *     It is mostly locked for reads.
+ *   - @ref stats_mutex: protects stream statistics, and is mostly locked for
+ *     writes (assuming the user is only occasionally checking the stats).
+ *
+ * While holding @ref config_mutex or @ref stats_mutex it is illegal to lock
+ * any of the other mutexes.
+ *
+ * The public interface takes care of locking the appropriate mutexes. The
+ * private member functions generally expect the caller to take locks.
  */
 class stream_base
 {
+public:
+    struct add_packet_state;
+
 private:
     struct queue_entry
     {
@@ -146,40 +169,51 @@ private:
      * A particular heap is in a constructed state iff the next pointer is
      * not INVALID_ENTRY.
      */
-    std::unique_ptr<storage_type[]> queue_storage;
+    const std::unique_ptr<storage_type[]> queue_storage;
     /// Number of entries in @ref buckets
-    std::size_t bucket_count;
+    const std::size_t bucket_count;
     /// Right shift to map 64-bit unsigned to a bucket index
-    int bucket_shift;
+    const int bucket_shift;
     /// Pointer to the first heap in each bucket, or NULL
-    std::unique_ptr<queue_entry *[]> buckets;
+    const std::unique_ptr<queue_entry *[]> buckets;
     /// Position of the most recently added heap
     std::size_t head;
 
     /// Maximum number of live heaps permitted.
-    std::size_t max_heaps;
+    const std::size_t max_heaps;
     /// Protocol bugs to be compatible with
-    bug_compat_mask bug_compat;
+    const bug_compat_mask bug_compat;
+
+    /**
+     * Mutex protecting the state of the queue. This includes
+     * - @ref queue_storage
+     * - @ref buckets
+     * - @ref head
+     * - @ref stopped
+     */
+    mutable std::mutex queue_mutex;
+
+    /**
+     * Mutex protecting configuration. This includes
+     * - @ref allocator
+     * - @ref memcpy
+     * - @ref stop_on_stop_item
+     * - @ref allow_unsized_heaps
+     */
+    mutable std::mutex config_mutex;
 
     /// Function used to copy heap payloads
-    std::atomic<memcpy_function> memcpy{std::memcpy};
+    packet_memcpy_function memcpy;
     /// Whether to stop when a stream control stop item is received
-    std::atomic<bool> stop_on_stop_item{true};
+    bool stop_on_stop_item = true;
+    /// Whether to permit packets that don't have HEAP_LENGTH item
+    bool allow_unsized_heaps = true;
 
-    /// Mutex protecting @ref allocator
-    std::mutex allocator_mutex;
-    /**
-     * Memory allocator used by heaps.
-     *
-     * This is protected by allocator_mutex. C++11 mandates free @c atomic_load
-     * and @c atomic_store on @c shared_ptr, but GCC 4.8 doesn't implement it.
-     * Also, std::atomic<std::shared_ptr<T>> causes undefined symbol errors, and
-     * is illegal because shared_ptr is not a POD type.
-     */
+    /// Memory allocator used by heaps.
     std::shared_ptr<memory_allocator> allocator;
 
     /// @ref stop_received has been called, either externally or by stream control
-    std::atomic<bool> stopped{false};
+    bool stopped = false;
 
     /// Compute bucket number for a heap cnt
     std::size_t get_bucket(s_item_pointer_t heap_cnt) const;
@@ -197,28 +231,52 @@ private:
 
     /**
      * Callback called when a heap is being ejected from the live list.
-     * The heap might or might not be complete.
+     * The heap might or might not be complete. The @ref queue_mutex will be
+     * locked during this call, which will block @ref stop and @ref flush.
      */
     virtual void heap_ready(live_heap &&) {}
+
+    /// Implementation of @ref flush that assumes the caller has locked @ref queue_mutex
+    void flush_unlocked();
+
+    /// Implementation of @ref stop that assumes the caller has locked @ref queue_mutex
+    void stop_unlocked();
+
+    /// Implementation of @ref add_packet_state::add_packet
+    bool add_packet(add_packet_state &state, const packet_header &packet);
 
 protected:
     mutable std::mutex stats_mutex;
     stream_stats stats;
 
+    /**
+     * Shut down the stream. This calls @ref flush_unlocked. Subclasses may
+     * override this to achieve additional effects, but must chain to the base
+     * implementation. It is guaranteed that it will only be called once.
+     *
+     * It is undefined what happens if @ref add_packet is called after a stream
+     * is stopped.
+     *
+     * This is called with @ref queue_mutex locked. Users must not call this
+     * function themselves; instead, call @ref stop.
+     */
+    virtual void stop_received();
+
 public:
     /**
-     * State for a batch of calls to @ref add_packet. The strand must be held for
-     * its entire lifetime. It holds copies of data that otherwise require
-     * atomic access in the owning class.
+     * State for a batch of calls to @ref add_packet. Constructing this object
+     * locks the stream's @ref queue_mutex.
      */
     struct add_packet_state
     {
         stream_base &owner;
+        std::lock_guard<std::mutex> lock;    ///< Holds a lock on the owner's @ref queue_mutex
 
         // Copied from the stream, but unencumbered by locks/atomics
-        memcpy_function memcpy;
+        packet_memcpy_function memcpy;
         std::shared_ptr<memory_allocator> allocator;
         bool stop_on_stop_item;
+        bool allow_unsized_heaps;
         // Updates to the statistics
         std::uint64_t packets = 0;
         std::uint64_t complete_heaps = 0;
@@ -228,6 +286,19 @@ public:
 
         explicit add_packet_state(stream_base &owner);
         ~add_packet_state();
+
+        bool is_stopped() const { return owner.stopped; }
+        /// Indicate that the stream has stopped (e.g. because the remote peer disconnected)
+        void stop() { owner.stop_unlocked(); }
+        /**
+         * Add a packet that was received, and which has been examined by @ref
+         * decode_packet, and returns @c true if it is consumed. Even though @ref
+         * decode_packet does some basic sanity-checking, it may still be rejected
+         * by @ref live_heap::add_packet e.g., because it is a duplicate.
+         *
+         * It is an error to call this after the stream has been stopped.
+         */
+        bool add_packet(const packet_header &packet) { return owner.add_packet(*this, packet); }
     };
 
     static constexpr std::size_t default_max_heaps = 4;
@@ -254,6 +325,9 @@ public:
     void set_memory_allocator(std::shared_ptr<memory_allocator> allocator);
 
     /// Set an alternative memcpy function for copying heap payload
+    void set_memcpy(packet_memcpy_function memcpy);
+
+    /// Set an alternative memcpy function for copying heap payload
     void set_memcpy(memcpy_function memcpy);
 
     /// Set builtin memcpy function to use for copying payload
@@ -265,44 +339,32 @@ public:
     /// Get whether to stop the stream when a stop item is received
     bool get_stop_on_stop_item() const;
 
-    /**
-     * Add a packet that was received, and which has been examined by @a
-     * decode_packet, and returns @c true if it is consumed. Even though @a
-     * decode_packet does some basic sanity-checking, it may still be rejected
-     * by @ref live_heap::add_packet e.g., because it is a duplicate.
-     *
-     * It is an error to call this after the stream has been stopped.
-     */
-    bool add_packet(add_packet_state &state, const packet_header &packet);
+    /// Set whether to allow heaps without HEAP_LENGTH
+    void set_allow_unsized_heaps(bool allow);
 
-    /**
-     * Shut down the stream. This calls @ref flush.  Subclasses may override
-     * this to achieve additional effects, but must chain to the base
-     * implementation.
-     *
-     * It is undefined what happens if @ref add_packet is called after a stream
-     * is stopped.
-     */
-    virtual void stop_received();
-
-    bool is_stopped() const { return stopped.load(); }
+    /// Get whether to allow heaps without HEAP_LENGTH
+    bool get_allow_unsized_heaps() const;
 
     bug_compat_mask get_bug_compat() const { return bug_compat; }
 
     /// Flush the collection of live heaps, passing them to @ref heap_ready.
     void flush();
+
+    /**
+     * Stop the stream. This calls @ref stop_received.
+     */
+    void stop();
+
+    /**
+     * Return statistics about the stream. See the Python documentation.
+     */
+    stream_stats get_stats() const;
 };
 
 /**
- * Stream that is fed by subclasses of @ref reader. Unless otherwise specified,
- * methods in @ref stream_base may only be called while holding the strand
- * contained in this class. The public interface functions must be called
- * from outside the strand (and outside the threads associated with the
- * io_service), but are not thread-safe relative to each other.
+ * Stream that is fed by subclasses of @ref reader.
  *
- * This class is thread-safe. This is achieved mostly by having operations run
- * as completion handlers on a strand. The exception is @ref stop, which uses a
- * @c once to ensure that only the first call actually runs.
+ * The public interface to this class is thread-safe.
  */
 class stream : protected stream_base
 {
@@ -312,32 +374,27 @@ private:
     /// Holder that just ensures that the thread pool doesn't vanish
     std::shared_ptr<thread_pool> thread_pool_holder;
 
-    /**
-     * Serialization of access.
-     */
-    boost::asio::io_service::strand strand;
+    /// I/O service used by the readers
+    boost::asio::io_service &io_service;
+
+    /// Protects mutable state (@ref readers, @ref stop_readers, @ref lossy).
+    mutable std::mutex reader_mutex;
     /**
      * Readers providing the stream data.
      */
     std::vector<std::unique_ptr<reader> > readers;
 
+    /// Set to true to indicate that no new readers should be added
+    bool stop_readers = false;
+
+    /// True if any lossy reader has been added
+    bool lossy = false;
+
     /// Ensure that @ref stop is only run once
     std::once_flag stop_once;
 
-    template<typename T, typename... Args>
-    void emplace_reader_callback(Args&&... args)
-    {
-        if (!is_stopped())
-        {
-            // Guarantee space before constructing the reader
-            readers.emplace_back(nullptr);
-            readers.pop_back();
-            std::unique_ptr<reader> ptr(reader_factory<T>::make_reader(*this, std::forward<Args>(args)...));
-            if (ptr->lossy())
-                lossy = true;
-            readers.push_back(std::move(ptr));
-        }
-    }
+    /// Incremented by readers when they die
+    semaphore readers_stopped;
 
     /* Prevent moving (copying is already impossible). Moving is not safe
      * because readers refer back to *this (it could potentially be added if
@@ -350,34 +407,6 @@ private:
 protected:
     virtual void stop_received() override;
 
-    /**
-     * Schedule execution of the function object @a callback through the @c
-     * io_service using the strand, and block until it completes. If the
-     * function throws an exception, it is rethrown in this thread.
-     */
-    template<typename F>
-    typename std::result_of<F()>::type run_in_strand(F &&func)
-    {
-        typedef typename std::result_of<F()>::type return_type;
-        std::packaged_task<return_type()> task(std::forward<F>(func));
-        auto future = task.get_future();
-        get_strand().dispatch([&task]
-        {
-            /* This is subtle: task lives on the run_in_strand stack frame, so
-             * we have to be very careful not to touch it after that function
-             * exits. Calling task() directly can continue to touch task even
-             * after it has unblocked the future. But the move constructor for
-             * packaged_task will take over the shared state for the future.
-             */
-            std::packaged_task<return_type()> my_task(std::move(task));
-            my_task();
-        });
-        return future.get();
-    }
-
-    /// True if any lossy reader has been added (only access with strand held)
-    bool lossy;
-
     /// Actual implementation of @ref stop
     void stop_impl();
 
@@ -389,11 +418,14 @@ public:
     using stream_base::set_memcpy;
     using stream_base::set_stop_on_stop_item;
     using stream_base::get_stop_on_stop_item;
-
-    boost::asio::io_service::strand &get_strand() { return strand; }
+    using stream_base::set_allow_unsized_heaps;
+    using stream_base::get_allow_unsized_heaps;
+    using stream_base::get_stats;
 
     explicit stream(io_service_ref io_service, bug_compat_mask bug_compat = 0, std::size_t max_heaps = default_max_heaps);
     virtual ~stream() override;
+
+    boost::asio::io_service &get_io_service() { return io_service; }
 
     /**
      * Add a new reader by passing its constructor arguments, excluding
@@ -402,18 +434,19 @@ public:
     template<typename T, typename... Args>
     void emplace_reader(Args&&... args)
     {
-        // This would probably work better with a lambda (better forwarding),
-        // but GCC 4.8 has a bug with accessing parameter packs inside a
-        // lambda.
-        run_in_strand(detail::reference_bind(
-                std::mem_fn(&stream::emplace_reader_callback<T, Args&&...>),
-                this, std::forward<Args>(args)...));
+        std::lock_guard<std::mutex> lock(reader_mutex);
+        // See comments in stop_impl for why we do this check
+        if (!stop_readers)
+        {
+            // Guarantee space before constructing the reader
+            readers.emplace_back(nullptr);
+            readers.pop_back();
+            std::unique_ptr<reader> ptr(reader_factory<T>::make_reader(*this, std::forward<Args>(args)...));
+            if (ptr->lossy())
+                lossy = true;
+            readers.push_back(std::move(ptr));
+        }
     }
-
-    /**
-     * Return statistics about the stream. See the Python documentation.
-     */
-    stream_stats get_stats() const;
 
     /**
      * Stop the stream and block until all the readers have wound up. After
@@ -421,9 +454,13 @@ public:
      * in the thread pool.
      *
      * In most cases subclasses should override @ref stop_received rather than
-     * this function.
+     * this function. However, if @ref heap_ready can block indefinitely, this
+     * function should be overridden to unblock it before calling the base
+     * implementation.
      */
     virtual void stop();
+
+    bool is_lossy() const;
 };
 
 /**

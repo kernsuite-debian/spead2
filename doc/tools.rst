@@ -6,7 +6,7 @@ Command-line tools
 spead2_bench
 ------------
 A benchmarking tool is provided to estimate the maximum throughput for UDP.
-There are two versions: one implemented in Python (:program:`spead2_bench.py`)
+There are two versions: one implemented in Python 3 (:program:`spead2_bench.py`)
 and one in C++ (:program:`spead2_bench`), which are installed by the
 corresponding installers. The examples show the Python version, but the C++
 version functions very similarly. However, they cannot be mixed: use the same
@@ -33,7 +33,7 @@ totally reliable setup, you should use a lower speed.
 spead2_send/spead2_recv
 -----------------------
 There are also separate :program:`spead2_send` and :program:`spead2_recv` (and
-Python equivalents) programs. The former generates a stream of meaningless
+Python 3 equivalent) programs. The former generates a stream of meaningless
 data, while the latter consumes an existing stream and reports the heaps and
 items that it finds. Apart from being useful for debugging a stream,
 :program:`spead2_recv` has a similar plethora of command-line options for
@@ -44,9 +44,9 @@ tuning that allow for exploration.
 mcdump
 ------
 mcdump is a tool similar to tcpdump_, but specialised for high-speed capture of
-multicast UDP traffic using hardware that supports the Infiniband Verbs API. It
-has only been tested on Mellanox ConnectX-3 NICs. Like gulp_, it uses a
-separate thread for disk I/O and CPU core affinity to achieve reliable
+UDP traffic using hardware that supports the Infiniband Verbs API. It
+has only been tested on Mellanox ConnectX-3 and ConnectX-5 NICs. Like gulp_, it
+uses a separate thread for disk I/O and CPU core affinity to achieve reliable
 performance. With a sufficiently fast disk subsystem, it is able to capture
 line rate from a 40Gb/s adapter.
 
@@ -77,6 +77,11 @@ multicast group *yy.yy.yy.yy* on UDP port *zzzz*. mcdump will take care of
 subscribing to the multicast group. Note that only IPv4 is supported. Capture
 continues until interrupted by :kbd:`Ctrl-C`. You can also list more
 :samp:`{group}:{port}` pairs, which will all stored in the same pcap file.
+
+While originally written for multicast, mcdump also supports unicast. An IP
+address must still be provided; usually it will be the same as the interface
+address, but it could be a different address if the interface has multiple IP
+addresses.
 
 You can also specify ``-`` in place of the filename to suppress the write to
 file. This is useful to simply count the bytes/packets received without being
@@ -115,7 +120,7 @@ Limitations
   detected at compile time. Otherwise, all packets have a zero timestamp in the
   file.
 
-- Only IPv4 multicast is supported.
+- Only IPv4 is supported.
 
 - It is not optimised for small packets (below about 1KB). Packet capture rates
   top out around 6Mpps for current hardware.

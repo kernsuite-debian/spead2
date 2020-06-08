@@ -1,4 +1,4 @@
-/* Copyright 2015, 2017 SKA South Africa
+/* Copyright 2015, 2017, 2019 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -87,7 +87,7 @@ py::bytes packet_generator_next(packet_generator &gen)
                                  boost::asio::buffers_end(pkt.buffers)));
 }
 
-static py::object make_io_error(boost::system::error_code ec)
+static py::object make_io_error(const boost::system::error_code &ec)
 {
     if (ec)
     {
@@ -144,18 +144,29 @@ public:
     }
 };
 
+struct callback_item
+{
+    py::handle callback;
+    py::handle h;  // heap: kept here because it can only be freed with the GIL
+    boost::system::error_code ec;
+    item_pointer_t bytes_transferred;
+};
+
+static void free_callback_items(const std::vector<callback_item> &callbacks)
+{
+    for (const callback_item &item : callbacks)
+    {
+        if (item.h)
+            item.h.dec_ref();
+        if (item.callback)
+            item.callback.dec_ref();
+    }
+}
+
 template<typename Base>
 class asyncio_stream_wrapper : public Base
 {
 private:
-    struct callback_item
-    {
-        py::handle callback;
-        py::handle h;  // heap: kept here because it can only be freed with the GIL
-        boost::system::error_code ec;
-        item_pointer_t bytes_transferred;
-    };
-
     semaphore_gil<semaphore_fd> sem;
     std::vector<callback_item> callbacks;
     std::mutex callbacks_mutex;
@@ -216,19 +227,24 @@ public:
                 callback(make_io_error(item.ec), item.bytes_transferred);
             }
         }
+        catch (py::error_already_set &e)
+        {
+            log_warning("send callback raised Python exception; expect deadlocks!");
+            free_callback_items(current_callbacks);
+            throw;
+        }
+        catch (std::bad_alloc &e)
+        {
+            /* If we're out of memory we might not be able to construct a log
+             * message. Just rely on Python to report an error.
+             */
+            free_callback_items(current_callbacks);
+            throw;
+        }
         catch (std::exception &e)
         {
-            /* Clean up the remaining handles. Note that we only get here if
-             * things have gone very badly wrong, such as an out-of-memory
-             * error.
-             */
-            for (const callback_item &item : current_callbacks)
-            {
-                if (item.h)
-                    item.h.dec_ref();
-                if (item.callback)
-                    item.callback.dec_ref();
-            }
+            log_warning("unexpected error in process_callbacks: %1%", e.what());
+            free_callback_items(current_callbacks);
             throw;
         }
     }
@@ -246,14 +262,9 @@ public:
 static boost::asio::ip::address make_address(
     boost::asio::io_service &io_service, const std::string &hostname)
 {
-    if (hostname == "")
-        return boost::asio::ip::address();
     py::gil_scoped_release gil;
-
-    using boost::asio::ip::udp;
-    udp::resolver resolver(io_service);
-    udp::resolver::query query(hostname, "", boost::asio::ip::resolver_query_base::flags(0));
-    return resolver.resolve(query)->endpoint().address();
+    return make_address_no_release(io_service, hostname,
+                                   boost::asio::ip::resolver_query_base::flags(0));
 }
 
 template<typename Protocol>
@@ -405,7 +416,7 @@ static py::class_<T> udp_stream_register(py::module &m, const char *name)
     using namespace pybind11::literals;
 
     return py::class_<T>(m, name)
-        .def(py::init<std::shared_ptr<thread_pool_wrapper>, std::string, std::uint16_t, const stream_config &, std::size_t, std::string>(),
+        .def(py::init<std::shared_ptr<thread_pool_wrapper>, std::string, std::uint16_t, const stream_config &, std::size_t, const socket_wrapper<boost::asio::ip::udp::socket> &>(),
              "thread_pool"_a, "hostname"_a, "port"_a,
              "config"_a = stream_config(),
              "buffer_size"_a = T::default_buffer_size,
@@ -539,7 +550,7 @@ private:
     static std::unique_ptr<stream_type> construct(Args... args)
     {
         std::shared_ptr<connect_state> state = std::make_shared<connect_state>();
-        auto connect_handler = [state](boost::system::error_code ec)
+        auto connect_handler = [state](const boost::system::error_code &ec)
         {
             state->ec = ec;
             state->sem.put();
@@ -649,17 +660,19 @@ static void async_stream_register(py::class_<T> &stream_class)
 py::module register_module(py::module &parent)
 {
     using namespace pybind11::literals;
-    using namespace spead2::send;
 
     py::module m = parent.def_submodule("send");
 
     py::class_<heap_wrapper>(m, "Heap")
         .def(py::init<flavour>(), "flavour"_a = flavour())
-        .def_property_readonly("flavour", &heap_wrapper::get_flavour)
+        .def_property_readonly("flavour", SPEAD2_PTMF(heap_wrapper, get_flavour))
         .def("add_item", SPEAD2_PTMF(heap_wrapper, add_item), "item"_a)
         .def("add_descriptor", SPEAD2_PTMF(heap_wrapper, add_descriptor), "descriptor"_a)
         .def("add_start", SPEAD2_PTMF(heap_wrapper, add_start))
-        .def("add_end", SPEAD2_PTMF(heap_wrapper, add_end));
+        .def("add_end", SPEAD2_PTMF(heap_wrapper, add_end))
+        .def_property("repeat_pointers",
+                      SPEAD2_PTMF(heap_wrapper, get_repeat_pointers),
+                      SPEAD2_PTMF(heap_wrapper, set_repeat_pointers));
 
     // keep_alive is safe to use here in spite of pybind/pybind11#856, because
     // the destructor of packet_generator doesn't reference the heap.

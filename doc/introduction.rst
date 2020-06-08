@@ -12,26 +12,25 @@ PySPEAD_ implementation, spead2:
 - cleanly supports several SPEAD flavours (e.g. 64-40 and 64-48) in one
   module, with the receiver adapting to the flavour used by the sender;
 - supports Python 3;
-- supports asynchronous operation, using trollius_ or asyncio_.
+- supports asynchronous operation, using asyncio_.
 
 .. _SPEAD: https://casper.berkeley.edu/wiki/SPEAD
 .. _PySPEAD: https://github.com/ska-sa/PySPEAD/
-.. _trollius: http://trollius.readthedocs.io/
 .. _asyncio: https://docs.python.org/3/library/asyncio.html
 
 Preparation
 -----------
-There is optional support for netmap_ and ibverbs_ for higher performance, and
+There is optional support for ibverbs_ for higher performance, and
 pcap_ for reading from previously captured packet dumps. If the libraries
 (including development headers) are installed, they will be detected
 automatically and support for them will be included.
 
-.. _netmap: https://github.com/luigirizzo/netmap
 .. _ibverbs: https://www.openfabrics.org/downloads/libibverbs/README.html
 .. _pcap: http://www.tcpdump.org/
 
 If you are installing spead2 from a git checkout, it is first necessary to run
-``./bootstrap.sh`` to prepare the configure script and related files. When
+``./bootstrap.sh`` to prepare the configure script and related files. This
+requires a Python installation with pycparser and jinja2 installed. When
 building from a packaged download this is not required.
 
 High-performance usage requires larger buffer sizes than Linux allows by
@@ -46,55 +45,46 @@ need to be stored in :file:`/etc/sysctl.conf` or :file:`/etc/sysctl.d`.
 
 Installing spead2 for Python
 ----------------------------
-The only Python dependencies are numpy_ and six_, and trollius_ on Python
-versions below 3.4 (for 3.4-3.6 trollius can still be used, and is needed to
-run the test suite). Running the test
-suite additionally requires nose_, decorator_ and netifaces_, and some tests
-depend on PySPEAD_ (they will be skipped if it is not installed). It is also
-necessary to have the development headers for Python.
+The only Python dependency is numpy_.
+
+The test suite has additional dependencies; refer to
+:file:`setup.py` if you are developing spead2.
 
 There are two ways to install spead2 for Python: compiling from source and
-installing a binary wheel. The binary wheels are experimental and only
-recommended if installing from source is not an option.
+installing a binary wheel.
 
 .. _numpy: http://www.numpy.org
 .. _six: https://pythonhosted.org/six/
-.. _nose: https://nose.readthedocs.io/en/latest/
-.. _decorator: http://pythonhosted.org/decorator/
-.. _netifaces: https://pypi.python.org/pypi/netifaces
+
+Installing a binary wheel
+^^^^^^^^^^^^^^^^^^^^^^^^^
+As from version 1.12, binary wheels are provided on PyPI for x86-64 Linux
+systems. These support all the optional features, and it is now the recommended
+installation method as it does not depend on a compiler, development
+libraries etc. The wheels use the "manylinux2010" tag, which requires at least
+:command:`pip` 19.0 to install.
+
+Provided your system meets these requirements, just run::
+
+    pip install spead2
 
 Python install from source
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 Installing from source requires a modern C++ compiler supporting C++11 (GCC
-4.8+ or Clang 3.5+) as well as Boost (including compiled libraries). At the
-moment only GNU/Linux and OS X get tested but other POSIX-like systems should
-work too. There are no plans to support Windows.
+4.8+ or Clang 3.5+, although only GCC 5.4 and Clang 3.8 are tested and support
+for older compilers may be dropped) as well as Boost (including compiled
+libraries) and the Python development headers. At the moment only GNU/Linux and
+OS X get tested but other POSIX-like systems should work too. There are no
+plans to support Windows.
 
-Installation works with standard Python installation methods. For example, to
-install the latest version from PyPI, run::
-
-    pip install spead2
-
-Installing a binary wheel
-^^^^^^^^^^^^^^^^^^^^^^^^^
-As from version 1.3.2, binary wheels for x86-64 Linux systems are placed on the
-Github `release page`_. They are still experimental, lack the optional features,
-and may be slower than installs from source because they are compiled with an
-old compiler. They are mainly intended for systems where it is not practical
-to install a new enough C++ compiler or Boost. For this reason, they are
-currently *not* provided through PyPI.
-
-.. _release page: https://github.com/ska-sa/spead2/releases
-
-After downloading the appropriate wheel for your Python version, install it
-with :samp:`pip install {filename}`.
+Installation works with standard Python installation methods.
 
 Installing spead2 for C++
 -------------------------
-spead2 requires a modern C++ compiler supporting C++11 (GCC 4.8+ or Clang 3.5+)
-as well as Boost (including compiled libraries). At the moment only GNU/Linux
-and OS X get tested but other POSIX-like systems should work too. There are no
-plans to support Windows.
+spead2 requires a modern C++ compiler supporting C++11 (see above for supported
+compilers) as well as Boost (including compiled libraries). At the moment only
+GNU/Linux and OS X get tested but other POSIX-like systems should work too.
+There are no plans to support Windows.
 
 The C++ API uses the standard autoconf installation flow i.e.:
 

@@ -1,4 +1,4 @@
-/* Copyright 2016 SKA South Africa
+/* Copyright 2016, 2019 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -29,9 +29,8 @@
 
 #include <boost/asio.hpp>
 #include <utility>
-#include <list>
 #include <vector>
-#include <functional>
+#include <memory>
 #include <boost/noncopyable.hpp>
 #include <spead2/send_packet.h>
 #include <spead2/send_stream.h>
@@ -58,7 +57,6 @@ private:
         ibv_send_wr wr{};
         ibv_sge sge{};
         ethernet_frame frame;
-        std::function<void(const boost::system::error_code &ec, item_pointer_t bytes_transferred)> handler;
     };
 
     const std::size_t n_slots;
@@ -76,6 +74,7 @@ private:
     ibv_mr_t mr;
     std::unique_ptr<slot[]> slots;
     std::vector<slot *> available;
+    const int max_poll;
 
     static ibv_qp_t
     create_qp(const ibv_pd_t &pd, const ibv_cq_t &send_cq, const ibv_cq_t &recv_cq,
@@ -84,47 +83,17 @@ private:
     /// Clear out the completion queue and return slots to available
     void reap();
 
-    void async_send_packet(const packet &pkt, completion_handler &&handler);
-
     /**
-     * Handler triggered by a completion interrupt. It would be much simpler as
-     * a lambda function, but this does not allow perfect forwarding of the
-     * handler since C++11 doesn't have generalised lambda captures.
+     * Try to reap completion events until there is enough space to send all
+     * current packets. Returns true if successful, otherwise returns false
+     * and schedules @ref async_send_packets to be called again later.
      */
-    struct rerun_async_send_packet
-    {
-    private:
-        udp_ibv_stream *self;
-        const packet *pkt;
-        udp_ibv_stream::completion_handler handler;
+    bool make_space();
 
-    public:
-        rerun_async_send_packet(udp_ibv_stream *self,
-                                const packet &pkt,
-                                udp_ibv_stream::completion_handler &&handler);
-
-        void operator()(boost::system::error_code ec, std::size_t bytes_transferred);
-    };
-
-    /**
-     * Wrapper to defer invocation of the handler. Like the above, this is
-     * a workaround for lambdas not allowing moves.
-     */
-    struct invoke_handler
-    {
-    private:
-        udp_ibv_stream::completion_handler handler;
-        boost::system::error_code ec;
-        std::size_t bytes_transferred;
-    public:
-        invoke_handler(udp_ibv_stream::completion_handler &&handler,
-                       boost::system::error_code ec,
-                       std::size_t bytes_transferred);
-        void operator()();
-    };
+    void async_send_packets();
 
 public:
-    /// Default receive buffer size, if none is passed to the constructor
+    /// Default send buffer size, if none is passed to the constructor
     static constexpr std::size_t default_buffer_size = 512 * 1024;
     /// Number of times to poll in a row, if none is explicitly passed to the constructor
     static constexpr int default_max_poll = 10;

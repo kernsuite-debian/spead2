@@ -8,9 +8,9 @@ of libibverbs.
 
 There are a number of limitations in the current implementation:
 
- - Only IPv4 is supported
- - VLAN tagging, IP optional headers, and IP fragmentation are not supported
- - Only multicast is supported.
+ - Only IPv4 is supported.
+ - VLAN tagging, IP optional headers, and IP fragmentation are not supported.
+ - For sending, only multicast is supported.
 
 Within these limitations, it is quite easy to take advantage of this faster
 code path. The main difficulty is that one *must* specify the IP address of
@@ -55,14 +55,17 @@ The ibverbs API can be used programmatically by using an extra method of
       place of `endpoints`.
 
       :param list endpoints: List of 2-tuples, each containing a
-        hostname/IP address the multicast group and the UDP port number.
+        hostname/IP address and the UDP port number. The address may be either
+        unicast or multicast, but in the former case there must be
+        an interface with that IP address (usually it will be the same as
+        `interface_address`, but this is not required as an interface may have
+        multiple IP addresses).
       :param str interface_address: Hostname/IP address of the interface which
         will be subscribed
       :param int max_size: Maximum packet size that will be accepted
-      :param int buffer_size: Requested memory allocation for work requests. Note
-        that this is used to determine the number of packets
-        to buffer; if the packets are smaller than `max_size`,
-        then fewer bytes will be buffered.
+      :param int buffer_size: Requested memory allocation for work requests.
+        It may be adjusted due to implementation-dependent limits or alignment
+        requirements.
       :param int comp_vector: Completion channel vector (interrupt)
         for asynchronous operation, or
         a negative value to poll continuously. Polling
@@ -78,8 +81,18 @@ The ibverbs API can be used programmatically by using an extra method of
         non-negative) or letting other code run on the
         thread (if `comp_vector` is negative).
 
-Reducing `max_size` to be close to the actual packet size can make a
-significant performance improvement.
+If supported by the NIC, the receive code will automatically use a
+"multi-packet receive queue", which allows each packet to consume only the
+amount of space needed in the buffer. This is not supported by all NICs (for
+example, ConnectX-3 does not, but ConnectX-5 does). When in use, the
+`max_size` parameter has little impact on performance, and is used only to
+reject larger packets.
+
+When multi-packet receive queues are not supported, performance can be
+improved by making `max_size` as small as possible for the intended data
+stream. This will increase the number of packets that can be buffered (because
+the buffer is divided into fixed-size slots), and also improve memory
+efficiency by keeping data more-or-less contiguous.
 
 Environment variables
 ^^^^^^^^^^^^^^^^^^^^^
@@ -99,10 +112,8 @@ Sending
 -------
 Sending is done by using the class :py:class:`spead2.send.UdpIbvStream` instead
 of :py:class:`spead2.send.UdpStream`. It has a different constructor, but the
-same methods. There are also :py:class:`spead2.send.asyncio.UdpIbvStream` and
-:py:class:`spead2.send.trollius.UdpIbvStream` classes, analogous to
-:py:class:`spead2.send.asyncio.UdpStream` and
-:py:class:`spead2.send.trollius.UdpStream`.
+same methods. There is also a :py:class:`spead2.send.asyncio.UdpIbvStream`
+class, analogous to :py:class:`spead2.send.asyncio.UdpStream`.
 
 .. py:class:: spead2.send.UdpIbvStream(thread_pool, multicast_group, port, config, interface_address, buffer_size, ttl=1, comp_vector=0, max_poll=DEFAULT_MAX_POLL)
 

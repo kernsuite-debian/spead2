@@ -1,6 +1,140 @@
 Changelog
 =========
 
+.. rubric:: 2.1.0
+
+- Support unicast receive with ibverbs acceleration (including in
+  :program:`mcdump`).
+- Fix :program:`spead2_recv` listening only on loopback when given just a port
+  number.
+- Support unicast addresses in a few APIs that previously only accepted
+  multicast addresses; in most cases the unicast address must match the
+  interface address.
+- Add missing ``<map>`` include to ``<spead2/recv_heap.h>``.
+- Show the values of immediate items in :program:`spead2_recv`.
+- Fix occasional crash when using thread pool with more than one thread
+  together with ibverbs.
+- Fix bug in mcdump causing it to hang if the arguments couldn't be parsed
+  (only happened when capturing to file).
+- Fix :program:`spead2_recv` reporting statistics that may miss out the last
+  batch of packets.
+
+.. rubric:: 2.0.2
+
+- Log warnings on some internal errors (that hopefully never happen).
+- Include wheels for Python 3.8.
+- Build debug symbols for binary wheels (in a separate tarball on Github).
+
+.. rubric:: 2.0.1
+
+- Fix race condition in TCP receiver (#78).
+- Update vendored pybind11 to 2.4.2.
+
+.. rubric:: 2.0.0
+
+- Drop support for Python 2.
+- Drop support for Python 3.4.
+- Drop support for trollius.
+- Drop support for netmap.
+- Avoid creating some cyclic references. These were not memory leaks, but
+  prevented CPython from freeing objects as soon as it might have.
+- Update vendored pybind11 to 2.4.1.
+
+.. rubric:: 1.14.0
+
+- Add `new_order` argument to :py:meth:`spead2.ItemGroup.update`.
+- Improved unit tests.
+
+.. rubric:: 1.13.1
+
+- Raise :exc:`ValueError` on a dtype that has zero itemsize (#37).
+- Change exception when dtype has embedded objects from :exc:`TypeError` to
+  :exc:`ValueError` for consistency
+- Remove duplicated socket handle in UDP receiver (#67).
+- Make `max_poll` argument to :py:class:`spead2.send.UdpIbvStream` actually
+  have an effect (#55).
+- Correctly report EOF errors in :cpp:class:`spead2::send::streambuf_stream`.
+- Wrap implicitly computed heap cnts to the number of available bits (#3).
+  Previously behaviour was undefined.
+- Some header files were not installed by ``make install`` (#72).
+
+.. rubric:: 1.13.0
+
+- Significant performance improvements to send code (in some cases an order of
+  magnitude improvement).
+- Add :option:`--max-heap` option to :program:`spead2_send` and
+  :program:`spead2_send.py` to control the depth of the send queue.
+- Change the meaning of the :option:`--heaps` option in :program:`spead2_bench`
+  and :program:`spead2_bench.py`: it now also controls the depth of the sending
+  queue.
+- Fix a bug in send rate limiting that could allow the target rate to be
+  exceeded under some conditions.
+- Remove :option:`--threads` option from C++ :program:`spead2_send`, as the new
+  optimised implementation isn't thread-safe.
+- Disable the ``test_numpy_large`` test on macOS, which was causing frequent
+  failures on TravisCI due to dropped packets.
+
+.. rubric:: 1.12.0
+
+- Provide manylinux2010 wheels.
+- Dynamically link to libibverbs and librdmacm on demand. This allows binaries
+  (particularly wheels) to support verbs acceleration but still work on systems
+  without these libraries installed.
+- Support for Boost 1.70. Unfortunately Boost 1.70 removes the ability to query
+  the io_service from a socket, so constructors that take a socket but no
+  io_service are omitted when compiling with Boost 1.70 or newer.
+- Fix some compiler warnings from GCC 8.
+
+.. rubric:: 1.11.4
+
+- Rework the locking internals of :cpp:class:`spead2::recv::stream` so that
+  a full ringbuffer doesn't block new readers from being added. This changes
+  the interfaces between :cpp:class:`spead2::recv::reader` and
+  :cpp:class:`spead2::recv::stream_base`, but since users generally don't deal
+  with that interface the major version hasn't been incremented.
+- Fix a spurious log message if an in-process receiver is manually stopped.
+- Fix an intermittent unit test failure due to timing.
+
+.. rubric:: 1.11.3
+
+- Undo the optimisation of using a single flow steering rule to cover multiple
+  multicast groups (see #11).
+
+.. rubric:: 1.11.2
+
+- Fix ``-c`` option to :program:`mcdump`.
+- Fix a missing ``#include`` that could be exposed by including headers in a
+  particular order.
+- Make :cpp:class:`spead2::recv::heap`'s move constructor and move assignment
+  operator ``noexcept``.
+- Add a `long_description` to the Python metadata.
+
+.. rubric:: 1.11.1
+
+- Update type stubs for new features in 1.11.0.
+
+.. rubric:: 1.11.0
+
+- Add :py:attr:`spead2.recv.Stream.allow_unsized_heaps` to support rejecting
+  packets without a heap length.
+- Add extended custom memcpy support (C++ only) for scattering data from
+  packets.
+
+.. rubric:: 1.10.1
+
+- Use ibverbs multi-packet receive queues automatically when available
+  (supported by mlx5 driver).
+- Automatically reduce buffer size for verbs receiver to match hardware limits
+  (fixed #64).
+- Gracefully handle Ctrl-C in :program:`spead2_recv` and print statistics.
+- Add typing stub files to assist checking with Mypy.
+- Give a name to the argument of
+  :py:meth:`spead2.recv.Stream.add_inproc_reader`.
+- Fix Python binding for one of the UDP reader overloads that takes an existing
+  socket. This was a deprecated overload.
+- Add a unit test for ibverbs support. It's not run by default because it
+  needs specific hardware.
+
 .. rubric:: 1.10.0
 
 - Accelerate per-packet processing, particularly when `max_heaps` is large.

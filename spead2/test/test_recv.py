@@ -1,4 +1,4 @@
-# Copyright 2015, 2017 SKA South Africa
+# Copyright 2015, 2017, 2019 SKA South Africa
 #
 # This program is free software: you can redistribute it and/or modify it under
 # the terms of the GNU Lesser General Public License as published by the Free
@@ -19,17 +19,16 @@ import struct
 import time
 
 import numpy as np
-import six
-from nose.tools import *
+from nose.tools import (
+    assert_equal, assert_in, assert_is_instance,
+    assert_true, assert_false, assert_raises, assert_logs)
 
 import spead2
 import spead2.recv as recv
 import spead2.send as send
 
-from .test_common import assert_equal_typed
 
-
-class Item(object):
+class Item:
     def __init__(self, id, value, immediate=False, offset=0):
         self.id = id
         self.value = value
@@ -43,7 +42,7 @@ class Item(object):
             return struct.pack('>Q', (self.id << heap_address_bits) | self.offset)
 
 
-class Flavour(object):
+class Flavour:
     def __init__(self, heap_address_bits, bug_compat=0):
         self.heap_address_bits = heap_address_bits
         self.bug_compat = bug_compat
@@ -119,7 +118,7 @@ class Flavour(object):
             if not item.immediate:
                 value = bytes(item.value)
                 all_items.append(Item(item.id, value, offset=offset))
-                payload[offset : offset+len(value)] = value
+                payload[offset : offset + len(value)] = value
                 offset += len(value)
             else:
                 all_items.append(item)
@@ -172,13 +171,13 @@ class Flavour(object):
         else:
             raise ValueError('Array must be C or Fortran-order contiguous')
         return self.make_numpy_descriptor(
-                id, name, description, array.dtype, array.shape, fortran_order)
+            id, name, description, array.dtype, array.shape, fortran_order)
 
 
 FLAVOUR = Flavour(48)
 
 
-class TestDecode(object):
+class TestDecode:
     """Various types of descriptors must be correctly interpreted to decode data"""
 
     def __init__(self):
@@ -191,9 +190,12 @@ class TestDecode(object):
         """
         thread_pool = spead2.ThreadPool()
         stop_on_stop_item = kwargs.pop('stop_on_stop_item', None)
+        allow_unsized_heaps = kwargs.pop('allow_unsized_heaps', None)
         stream = recv.Stream(thread_pool, self.flavour.bug_compat, **kwargs)
         if stop_on_stop_item is not None:
             stream.stop_on_stop_item = stop_on_stop_item
+        if allow_unsized_heaps is not None:
+            stream.allow_unsized_heaps = allow_unsized_heaps
         stream.add_buffer_reader(data)
         return list(stream)
 
@@ -206,7 +208,7 @@ class TestDecode(object):
         ig = spead2.ItemGroup()
         ig.update(heaps[0])
         for name, item in ig.items():
-            assert_equal_typed(name, item.name)
+            assert_equal(name, item.name)
         return ig
 
     def data_to_item(self, data, expected_id):
@@ -258,7 +260,6 @@ class TestDecode(object):
             ])
         ig = self.data_to_ig(packet)
         assert_equal(3, len(ig))
-        item = ig[0x1234]
         assert_equal(0x9234567890AB, ig[0x1234].value)
         assert_equal(0x1234567890AB, ig[0x1235].value)
         assert_equal(-0x6DCBA9876F55, ig[0x1236].value)
@@ -272,7 +273,7 @@ class TestDecode(object):
                 Item(0x1234, 'Hello world'.encode('ascii'))
             ])
         item = self.data_to_item(packet, 0x1234)
-        assert_equal_typed('Hello world', item.value)
+        assert_equal('Hello world', item.value)
 
     def test_array(self):
         packet = self.flavour.make_packet_heap(
@@ -484,7 +485,7 @@ class TestDecode(object):
         ig = spead2.ItemGroup()
         ig.update(heaps[0])
         ig.update(heaps[1])
-        assert_equal_typed('Hello world', ig['test_string'].value)
+        assert_equal('Hello world', ig['test_string'].value)
 
     def test_size_mismatch(self):
         packet = self.flavour.make_packet_heap(
@@ -514,7 +515,22 @@ class TestDecode(object):
         heaps = self.data_to_heaps(packet)
         assert_equal(1, len(heaps))
         ig = spead2.ItemGroup()
-        assert_raises(TypeError, ig.update, heaps[0])
+        assert_raises(ValueError, ig.update, heaps[0])
+
+    def test_numpy_zero_size(self):
+        """numpy dtypes can represent zero bytes."""
+        dtype = np.dtype(np.str_)
+        packet = self.flavour.make_packet_heap(
+            1,
+            [
+                self.flavour.make_numpy_descriptor(
+                    0x1234, 'empty', 'an item with zero-byte dtype', dtype, (5,)),
+                Item(0x1234, b'')
+            ])
+        heaps = self.data_to_heaps(packet)
+        assert_equal(1, len(heaps))
+        ig = spead2.ItemGroup()
+        assert_raises(ValueError, ig.update, heaps[0])
 
     def test_numpy_malformed(self):
         """Malformed numpy header must raise :py:exc:`ValueError`."""
@@ -529,16 +545,16 @@ class TestDecode(object):
             assert_equal(1, len(heaps))
             ig = spead2.ItemGroup()
             assert_raises(ValueError, ig.update, heaps[0])
-        helper("{'descr': 'S1'")  # Syntax error: no closing brace
-        helper("123")             # Not a dictionary
-        helper("import os")       # Security check
-        helper("{'descr': 'S1'}") # Missing keys
+        helper("{'descr': 'S1'")   # Syntax error: no closing brace
+        helper("123")              # Not a dictionary
+        helper("import os")        # Security check
+        helper("{'descr': 'S1'}")  # Missing keys
         helper("{'descr': 'S1', 'fortran_order': False, 'shape': (), 'foo': 'bar'}")  # Extra keys
-        helper("{'descr': 'S1', 'fortran_order': False, 'shape': (-1,)}")   # Bad shape
-        helper("{'descr': 1, 'fortran_order': False, 'shape': ()}")         # Bad descriptor
-        helper("{'descr': '+-', 'fortran_order': False, 'shape': ()}")      # Bad descriptor
-        helper("{'descr': 'S1', 'fortran_order': 0, 'shape': ()}")          # Bad fortran_order
-        helper("{'descr': 'S1', 'fortran_order': False, 'shape': (None,)}") # Bad shape
+        helper("{'descr': 'S1', 'fortran_order': False, 'shape': (-1,)}")    # Bad shape
+        helper("{'descr': 1, 'fortran_order': False, 'shape': ()}")          # Bad descriptor
+        helper("{'descr': '+-', 'fortran_order': False, 'shape': ()}")       # Bad descriptor
+        helper("{'descr': 'S1', 'fortran_order': 0, 'shape': ()}")           # Bad fortran_order
+        helper("{'descr': 'S1', 'fortran_order': False, 'shape': (None,)}")  # Bad shape
 
     def test_nonascii_value(self):
         """Receiving non-ASCII characters in a c8 string must raise
@@ -548,7 +564,7 @@ class TestDecode(object):
             [
                 self.flavour.make_plain_descriptor(
                     0x1234, 'test_string', 'a byte string', [('c', 8)], [None]),
-                Item(0x1234, six.u('\u0200').encode('utf-8'))
+                Item(0x1234, '\u0200'.encode())
             ])
         heaps = self.data_to_heaps(packet)
         ig = spead2.ItemGroup()
@@ -605,6 +621,22 @@ class TestDecode(object):
         assert_equal(1, len(raw_items))
         assert_equal(payload1 + payload2, bytearray(raw_items[0]))
 
+    def test_disallow_unsized_heaps(self):
+        """Packets without heap length rejected if disallowed"""
+        packet = self.flavour.make_packet(
+            [
+                Item(spead2.HEAP_CNT_ID, 1, True),
+                Item(0x1000, None, False, offset=0),
+                Item(spead2.PAYLOAD_OFFSET_ID, 0, True),
+                Item(spead2.PAYLOAD_LENGTH_ID, 64, True)
+            ], bytes(np.arange(0, 64, dtype=np.uint8).data))
+        with assert_logs('spead2', 'INFO') as cm:
+            heaps = self.data_to_heaps(packet, allow_unsized_heaps=False)
+            # Logging is asynchronous, so we have to give it a bit of time
+            time.sleep(0.1)
+        assert_equal(cm.output, ['INFO:spead2:packet rejected because it has no HEAP_LEN'])
+        assert_equal(0, len(heaps))
+
     def test_bad_offset(self):
         """Heap with out-of-range offset should be dropped"""
         packet = self.flavour.make_packet(
@@ -619,7 +651,7 @@ class TestDecode(object):
         assert_equal(0, len(heaps))
 
 
-class TestStream(object):
+class TestStream:
     """Tests for the stream API"""
 
     def __init__(self):
@@ -686,7 +718,7 @@ class TestStream(object):
         assert_equal(0, stats.worker_blocked)
 
 
-class TestUdpReader(object):
+class TestUdpReader:
     def test_out_of_range_udp_port(self):
         receiver = spead2.recv.Stream(spead2.ThreadPool())
         assert_raises(TypeError, receiver.add_udp_reader, 100000)
@@ -696,7 +728,7 @@ class TestUdpReader(object):
         assert_raises(RuntimeError, receiver.add_udp_reader, 22)
 
 
-class TestTcpReader(object):
+class TestTcpReader:
     def setup(self):
         self.receiver = spead2.recv.Stream(spead2.ThreadPool())
         recv_sock = socket.socket()
@@ -735,7 +767,7 @@ class TestTcpReader(object):
         ig = spead2.ItemGroup()
         ig.update(heaps[0])
         for name, item in ig.items():
-            assert_equal_typed(name, item.name)
+            assert_equal(name, item.name)
         return ig
 
     def data_to_item(self, data, expected_id):

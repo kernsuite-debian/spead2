@@ -1,9 +1,33 @@
+/* Copyright 2016, 2017, 2019 SKA South Africa
+ *
+ * This program is free software: you can redistribute it and/or modify it under
+ * the terms of the GNU Lesser General Public License as published by the Free
+ * Software Foundation, either version 3 of the License, or (at your option) any
+ * later version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+ * FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+/**
+ * @file
+ *
+ * Unit tests for common_memory_pool.
+ */
+
 #include <boost/test/unit_test.hpp>
 #include <vector>
 #include <string>
 #include <map>
 #include <functional>
 #include <memory>
+#include <thread>
+#include <chrono>
 #include <spead2/common_memory_pool.h>
 #include <spead2/common_thread_pool.h>
 #include <spead2/common_logging.h>
@@ -16,6 +40,11 @@ namespace unittest
 BOOST_AUTO_TEST_SUITE(common)
 BOOST_AUTO_TEST_SUITE(memory_pool)
 
+BOOST_AUTO_TEST_CASE(default_constructible)
+{
+    spead2::memory_pool pool;
+}
+
 // Repeatedly allocates memory from a memory pool to check that the refilling
 // code does not crash.
 BOOST_AUTO_TEST_CASE(memory_pool_refill)
@@ -27,6 +56,8 @@ BOOST_AUTO_TEST_CASE(memory_pool_refill)
     std::vector<spead2::memory_pool::pointer> pointers;
     for (int i = 0; i < 100; i++)
         pointers.push_back(pool->allocate(1024 * 1024, nullptr));
+    // Give the refiller time to refill completely
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 }
 
 class mock_allocator : public spead2::memory_allocator

@@ -17,23 +17,25 @@
 
 from __future__ import print_function, division
 import weakref
+
 import spead2 as _spead2
-from spead2._spead2.send import (StreamConfig, Heap, PacketGenerator,
-                                 BytesStream, UdpStream, TcpStream, InprocStream)
+from spead2._spead2.send import (       # noqa: F401
+    StreamConfig, Heap, PacketGenerator,
+    BytesStream, UdpStream, TcpStream, InprocStream)
 try:
-    from spead2._spead2.send import UdpIbvStream
+    from spead2._spead2.send import UdpIbvStream      # noqa: F401
 except ImportError:
     pass
 
 
-class _ItemInfo(object):
+class _ItemInfo:
     def __init__(self, item):
         self.version = None
         self.descriptor_cnt = None
         self.item = weakref.ref(item)
 
 
-class HeapGenerator(object):
+class HeapGenerator:
     """Tracks which items and item values have previously been sent and
     generates delta heaps.
 
@@ -49,7 +51,9 @@ class HeapGenerator(object):
         :py:meth:`get_end`.
     """
     def __init__(self, item_group, descriptor_frequency=None, flavour=_spead2.Flavour()):
-        self._item_group = item_group
+        # Workaround to avoid creating a self-reference when it's bundled into
+        # the same class.
+        self._item_group = item_group if item_group is not self else None
         self._info = {}              # Maps ID to _ItemInfo
         self._descriptor_frequency = descriptor_frequency
         # Counter for calls to add_to_heap. This is independent of the
@@ -108,9 +112,11 @@ class HeapGenerator(object):
             raise ValueError("descriptors must be one of 'stale', 'all', 'none'")
         if data not in ['stale', 'all', 'none']:
             raise ValueError("data must be one of 'stale', 'all', 'none'")
-        for item in self._item_group.values():
+        item_group = self._item_group if self._item_group is not None else self
+        for item in item_group.values():
             info = self._get_info(item)
-            if (descriptors == 'all') or (descriptors == 'stale' and self._descriptor_stale(item, info)):
+            if (descriptors == 'all') or (descriptors == 'stale'
+                                          and self._descriptor_stale(item, info)):
                 heap.add_descriptor(item)
                 info.descriptor_cnt = self._descriptor_cnt
             if item.value is not None:

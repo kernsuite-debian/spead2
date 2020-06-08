@@ -41,6 +41,39 @@ is paired with one heap generator, a convenience class
    .. automethod:: spead2.send.HeapGenerator.get_start
    .. automethod:: spead2.send.HeapGenerator.get_end
 
+.. py:class:: spead2.send.Heap(flavour=spead2.Flavour())
+
+   .. py:attribute:: repeat_pointers
+
+      Enable/disable repetition of item pointers in all packets.
+
+      Usually this is not needed, but it can enable some specialised use
+      cases where immediates can be recovered from incomplete heaps or where
+      the receiver examines the item pointers in each packet to decide how
+      to handle it. The packet size must be large enough to fit all the item
+      pointers for the heap (the implementation also reserves a little space,
+      so do not rely on a tight fit working).
+
+      The default is disabled.
+
+   .. py:method:: add_item(item)
+
+      Add an :py:class:`~spead2.Item` to the heap. This references the memory in
+      the item rather than copying it. It does *not* cause a descriptor to be
+      sent; use :py:meth:`add_descriptor` for that.
+
+   .. py:method:: add_descriptor(descriptor)
+
+      Add a :py:class:`~spead2.Descriptor` to the heap.
+
+   .. py:method:: add_start()
+
+      Convenience method to add a start-of-stream item.
+
+   .. py:method:: add_end()
+
+      Convenience method to add an end-of-stream item.
+
 Blocking send
 -------------
 
@@ -54,7 +87,7 @@ implement the following interface, although this base class does not actually ex
 
       Sends a :py:class:`spead2.send.Heap` to the peer, and wait for
       completion. There is currently no indication of whether it successfully
-      arrived.
+      arrived, but :py:exc:`IOError` is raised if it could not be sent.
 
       If not specified, a heap cnt is chosen automatically (the choice can be
       modified by calling :py:meth:`set_cnt_sequence`). If a non-negative value
@@ -67,10 +100,13 @@ implement the following interface, although this base class does not actually ex
       will have cnt `next`, and each following cnt will be incremented by
       `step`. When using this, it is the user's responsibility to ensure
       that the generated values remain unique. The initial state is `next` =
-      1, `cnt` = 1.
+      1, `step` = 1.
 
       This is useful when multiple senders will send heaps to the same
       receiver, and need to keep their heap cnts separate.
+
+      If the computed cnt overflows the number of bits available, the
+      bottom-most bits are taken.
 
 UDP
 ^^^
@@ -234,8 +270,7 @@ Refer to the separate :doc:`documentation <py-inproc>`.
 Asynchronous send
 -----------------
 
-As for asynchronous receives, asynchronous sends are managed by asyncio_ or
-trollius_. A
+As for asynchronous receives, asynchronous sends are managed by asyncio_. A
 stream can buffer up multiple heaps for asynchronous send, up to the limit
 specified by `max_heaps` in the :py:class:`~spead2.send.StreamConfig`. If this
 limit is exceeded, heaps will be dropped, and the returned future has an
@@ -243,13 +278,11 @@ limit is exceeded, heaps will be dropped, and the returned future has an
 low-level error in sending the heap (for example, if the packet size exceeds
 the MTU).
 
-.. _trollius: http://trollius.readthedocs.io/
 .. _asyncio: https://docs.python.org/3/library/asyncio.html
 
-The classes existing in the :py:mod:`spead2.send.asyncio` and
-:py:mod:`spead2.send.trollius` modules, and mostly implement the same
-constructors as the synchronous classes. They implement the following abstract
-interface (the class does not actually exist):
+The classes exist in the :py:mod:`spead2.send.asyncio` modules, and mostly
+implement the same constructors as the synchronous classes. They implement the
+following abstract interface (the class does not actually exist):
 
 .. class:: spead2.send.asyncio.AbstractStream()
 

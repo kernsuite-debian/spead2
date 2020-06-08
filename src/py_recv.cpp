@@ -1,4 +1,4 @@
-/* Copyright 2015, 2017 SKA South Africa
+/* Copyright 2015, 2017, 2020 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -109,15 +109,8 @@ private:
 
     boost::asio::ip::address make_address(const std::string &hostname)
     {
-        if (hostname.empty())
-            return boost::asio::ip::address_v4::any();
-        else
-        {
-            using boost::asio::ip::udp;
-            udp::resolver resolver(get_strand().get_io_service());
-            udp::resolver::query query(hostname, "", udp::resolver::query::passive);
-            return resolver.resolve(query)->endpoint().address();
-        }
+        return make_address_no_release(get_io_service(), hostname,
+                                       boost::asio::ip::udp::resolver::query::passive);
     }
 
     template<typename Protocol>
@@ -215,7 +208,7 @@ public:
         else
         {
             deprecation_warning("passing unbound socket plus port is deprecated");
-            auto asio_socket = socket->copy(get_strand().get_io_service());
+            auto asio_socket = socket->copy(get_io_service());
             py::gil_scoped_release gil;
             auto endpoint = make_endpoint<boost::asio::ip::udp>(bind_hostname, port);
             emplace_reader<udp_reader>(std::move(asio_socket), endpoint, max_size, buffer_size);
@@ -226,32 +219,32 @@ public:
         const socket_wrapper<boost::asio::ip::udp::socket> &socket,
         std::size_t max_size = udp_reader::default_max_size)
     {
-        auto asio_socket = socket.copy(get_strand().get_io_service());
+        auto asio_socket = socket.copy(get_io_service());
         py::gil_scoped_release gil;
         emplace_reader<udp_reader>(std::move(asio_socket), max_size);
     }
 
-    void add_udp_reader_multicast_v4(
-        const std::string &multicast_group,
+    void add_udp_reader_bind_v4(
+        const std::string &address,
         std::uint16_t port,
         std::size_t max_size,
         std::size_t buffer_size,
         const std::string &interface_address)
     {
         py::gil_scoped_release gil;
-        auto endpoint = make_endpoint<boost::asio::ip::udp>(multicast_group, port);
+        auto endpoint = make_endpoint<boost::asio::ip::udp>(address, port);
         emplace_reader<udp_reader>(endpoint, max_size, buffer_size, make_address(interface_address));
     }
 
-    void add_udp_reader_multicast_v6(
-        const std::string &multicast_group,
+    void add_udp_reader_bind_v6(
+        const std::string &address,
         std::uint16_t port,
         std::size_t max_size,
         std::size_t buffer_size,
         unsigned int interface_index)
     {
         py::gil_scoped_release gil;
-        auto endpoint = make_endpoint<boost::asio::ip::udp>(multicast_group, port);
+        auto endpoint = make_endpoint<boost::asio::ip::udp>(address, port);
         emplace_reader<udp_reader>(endpoint, max_size, buffer_size, interface_index);
     }
 
@@ -270,14 +263,14 @@ public:
         const socket_wrapper<boost::asio::ip::tcp::acceptor> &acceptor,
         std::size_t max_size)
     {
-        auto asio_socket = acceptor.copy(get_strand().get_io_service());
+        auto asio_socket = acceptor.copy(get_io_service());
         py::gil_scoped_release gil;
         emplace_reader<tcp_reader>(std::move(asio_socket), max_size);
     }
 
 #if SPEAD2_USE_IBV
     void add_udp_ibv_reader_single(
-        const std::string &multicast_group,
+        const std::string &address,
         std::uint16_t port,
         const std::string &interface_address,
         std::size_t max_size,
@@ -286,7 +279,7 @@ public:
         int max_poll)
     {
         py::gil_scoped_release gil;
-        auto endpoint = make_endpoint<boost::asio::ip::udp>(multicast_group, port);
+        auto endpoint = make_endpoint<boost::asio::ip::udp>(address, port);
         emplace_reader<udp_ibv_reader>(endpoint, make_address(interface_address),
                                        max_size, buffer_size, comp_vector, max_poll);
     }
@@ -304,9 +297,9 @@ public:
         for (size_t i = 0; i < len(endpoints); i++)
         {
             py::sequence endpoint = endpoints[i].cast<py::sequence>();
-            std::string multicast_group = endpoint[0].cast<std::string>();
+            std::string address = endpoint[0].cast<std::string>();
             std::uint16_t port = endpoint[1].cast<std::uint16_t>();
-            endpoints2.push_back(make_endpoint<boost::asio::ip::udp>(multicast_group, port));
+            endpoints2.push_back(make_endpoint<boost::asio::ip::udp>(address, port));
         }
         py::gil_scoped_release gil;
         emplace_reader<udp_ibv_reader>(endpoints2, make_address(interface_address),
@@ -345,10 +338,8 @@ public:
 py::module register_module(py::module &parent)
 {
     using namespace pybind11::literals;
-    using namespace spead2::recv;
 
-    // Create the module, and set it as the current boost::python scope so that
-    // classes we define are added to this module rather than the root.
+    // Create the module
     py::module m = parent.def_submodule("recv");
 
     py::class_<heap_base>(m, "HeapBase")
@@ -422,6 +413,13 @@ py::module register_module(py::module &parent)
                       [](ring_stream_wrapper &self, bool stop) {
                           self.set_stop_on_stop_item(stop);
                       })
+        .def_property("allow_unsized_heaps",
+                      [](const ring_stream_wrapper &self) {
+                          return self.get_allow_unsized_heaps();
+                      },
+                      [](ring_stream_wrapper &self, bool allow) {
+                          self.set_allow_unsized_heaps(allow);
+                      })
         .def("add_buffer_reader", SPEAD2_PTMF(ring_stream_wrapper, add_buffer_reader), "buffer"_a)
         .def("add_udp_reader", SPEAD2_PTMF(ring_stream_wrapper, add_udp_reader),
               "port"_a,
@@ -432,13 +430,13 @@ py::module register_module(py::module &parent)
         .def("add_udp_reader", SPEAD2_PTMF(ring_stream_wrapper, add_udp_reader_socket),
               "socket"_a,
               "max_size"_a = udp_reader::default_max_size)
-        .def("add_udp_reader", SPEAD2_PTMF(ring_stream_wrapper, add_udp_reader_multicast_v4),
+        .def("add_udp_reader", SPEAD2_PTMF(ring_stream_wrapper, add_udp_reader_bind_v4),
               "multicast_group"_a,
               "port"_a,
               "max_size"_a = udp_reader::default_max_size,
               "buffer_size"_a = udp_reader::default_buffer_size,
               "interface_address"_a = "0.0.0.0")
-        .def("add_udp_reader", SPEAD2_PTMF(ring_stream_wrapper, add_udp_reader_multicast_v6),
+        .def("add_udp_reader", SPEAD2_PTMF(ring_stream_wrapper, add_udp_reader_bind_v6),
               "multicast_group"_a,
               "port"_a,
               "max_size"_a = udp_reader::default_max_size,
@@ -473,10 +471,12 @@ py::module register_module(py::module &parent)
         .def("add_udp_pcap_file_reader", SPEAD2_PTMF(ring_stream_wrapper, add_udp_pcap_file_reader),
              "filename"_a)
 #endif
-        .def("add_inproc_reader", SPEAD2_PTMF(ring_stream_wrapper, add_inproc_reader))
+        .def("add_inproc_reader", SPEAD2_PTMF(ring_stream_wrapper, add_inproc_reader),
+             "queue"_a)
         .def("stop", SPEAD2_PTMF(ring_stream_wrapper, stop))
         .def_property_readonly("fd", SPEAD2_PTMF(ring_stream_wrapper, get_fd))
-        .def_property_readonly("stats", SPEAD2_PTMF(ring_stream_wrapper, get_stats))
+        // SPEAD2_PTMF doesn't work for get_stats because it's defined in stream_base, which is a protected ancestor
+        .def_property_readonly("stats", [](const ring_stream_wrapper &stream) { return stream.get_stats(); })
         .def_property_readonly("ringbuffer", SPEAD2_PTMF(ring_stream_wrapper, get_ringbuffer))
 #if SPEAD2_USE_IBV
         .def_readonly_static("DEFAULT_UDP_IBV_MAX_SIZE", &udp_ibv_reader::default_max_size)

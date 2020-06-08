@@ -1,4 +1,4 @@
-/* Copyright 2015 SKA South Africa
+/* Copyright 2015, 2019 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -80,6 +80,7 @@ private:
 public:
     packet_generator(const heap &h, item_pointer_t cnt, std::size_t max_packet_size);
 
+    bool has_next_packet() const;
     packet next_packet();
 };
 

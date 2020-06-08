@@ -1,4 +1,4 @@
-/* Copyright 2015, 2017, 2018 SKA South Africa
+/* Copyright 2015, 2017-2019 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -27,6 +27,7 @@
 #include <spead2/recv_live_heap.h>
 #include <spead2/common_memcpy.h>
 #include <spead2/common_thread_pool.h>
+#include <spead2/common_logging.h>
 
 #define INVALID_ENTRY ((queue_entry *) -1)
 
@@ -81,6 +82,12 @@ static int compute_bucket_shift(std::size_t bucket_count)
     return shift;
 }
 
+#define SPEAD2_ADAPT_MEMCPY(func, capture) \
+    (packet_memcpy_function([capture](const spead2::memory_allocator::pointer &allocation, const packet_header &packet) \
+     { \
+         func(allocation.get() + packet.payload_offset, packet.payload, packet.payload_length); \
+     }))
+
 stream_base::stream_base(bug_compat_mask bug_compat, std::size_t max_heaps)
     : queue_storage(new storage_type[max_heaps]),
     bucket_count(compute_bucket_count(max_heaps)),
@@ -88,6 +95,7 @@ stream_base::stream_base(bug_compat_mask bug_compat, std::size_t max_heaps)
     buckets(new queue_entry *[bucket_count]),
     head(0),
     max_heaps(max_heaps), bug_compat(bug_compat),
+    memcpy(SPEAD2_ADAPT_MEMCPY(std::memcpy, )),
     allocator(std::make_shared<memory_allocator>())
 {
     if (max_heaps == 0)
@@ -143,24 +151,34 @@ void stream_base::set_memory_pool(std::shared_ptr<memory_pool> pool)
 
 void stream_base::set_memory_allocator(std::shared_ptr<memory_allocator> allocator)
 {
-    std::lock_guard<std::mutex> lock(allocator_mutex);
+    std::lock_guard<std::mutex> lock(config_mutex);
     this->allocator = std::move(allocator);
+}
+
+void stream_base::set_memcpy(packet_memcpy_function memcpy)
+{
+    std::lock_guard<std::mutex> lock(config_mutex);
+    this->memcpy = memcpy;
 }
 
 void stream_base::set_memcpy(memcpy_function memcpy)
 {
-    this->memcpy.store(memcpy, std::memory_order_relaxed);
+    set_memcpy(SPEAD2_ADAPT_MEMCPY(memcpy, memcpy));
 }
 
 void stream_base::set_memcpy(memcpy_function_id id)
 {
+    /* We adapt each case to the packet_memcpy signature rather than using the
+     * generic wrapping in the memcpy_function overload. This ensures that
+     * there is only one level of indirect function call instead of two.
+     */
     switch (id)
     {
     case MEMCPY_STD:
-        set_memcpy(std::memcpy);
+        set_memcpy(SPEAD2_ADAPT_MEMCPY(std::memcpy, ));
         break;
     case MEMCPY_NONTEMPORAL:
-        set_memcpy(spead2::memcpy_nontemporal);
+        set_memcpy(SPEAD2_ADAPT_MEMCPY(spead2::memcpy_nontemporal, ));
         break;
     default:
         throw std::invalid_argument("Unknown memcpy function");
@@ -169,25 +187,43 @@ void stream_base::set_memcpy(memcpy_function_id id)
 
 void stream_base::set_stop_on_stop_item(bool stop)
 {
+    std::lock_guard<std::mutex> lock(config_mutex);
     stop_on_stop_item = stop;
 }
 
 bool stream_base::get_stop_on_stop_item() const
 {
-    return stop_on_stop_item.load();
+    std::lock_guard<std::mutex> lock(config_mutex);
+    return stop_on_stop_item;
+}
+
+void stream_base::set_allow_unsized_heaps(bool allow)
+{
+    std::lock_guard<std::mutex> lock(config_mutex);
+    allow_unsized_heaps = allow;
+}
+
+bool stream_base::get_allow_unsized_heaps() const
+{
+    std::lock_guard<std::mutex> lock(config_mutex);
+    return allow_unsized_heaps;
 }
 
 stream_base::add_packet_state::add_packet_state(stream_base &owner)
-    : owner(owner), memcpy(owner.memcpy.load()),
-    stop_on_stop_item(owner.stop_on_stop_item.load())
+    : owner(owner), lock(owner.queue_mutex)
 {
-    std::lock_guard<std::mutex> lock(owner.allocator_mutex);
+    std::lock_guard<std::mutex> config_lock(owner.config_mutex);
     allocator = owner.allocator;
+    memcpy = owner.memcpy;
+    stop_on_stop_item = owner.stop_on_stop_item;
+    allow_unsized_heaps = owner.allow_unsized_heaps;
 }
 
 stream_base::add_packet_state::~add_packet_state()
 {
     std::lock_guard<std::mutex> stats_lock(owner.stats_mutex);
+    if (!packets && is_stopped())
+        return;   // Stream was stopped before we could do anything - don't count as a batch
     owner.stats.packets += packets;
     owner.stats.batches++;
     owner.stats.heaps += complete_heaps + incomplete_heaps_evicted;
@@ -200,6 +236,13 @@ stream_base::add_packet_state::~add_packet_state()
 bool stream_base::add_packet(add_packet_state &state, const packet_header &packet)
 {
     assert(!stopped);
+    state.packets++;
+    if (packet.heap_length < 0 && !state.allow_unsized_heaps)
+    {
+        log_info("packet rejected because it has no HEAP_LEN");
+        return false;
+    }
+
     // Look for matching heap.
     queue_entry *entry = NULL;
     s_item_pointer_t heap_cnt = packet.heap_cnt;
@@ -260,14 +303,13 @@ bool stream_base::add_packet(add_packet_state &state, const packet_header &packe
             h->~live_heap();
         }
     }
-    state.packets++;
 
     if (end_of_stream)
         stop_received();
     return result;
 }
 
-void stream_base::flush()
+void stream_base::flush_unlocked()
 {
     std::size_t n_flushed = 0;
     for (std::size_t i = 0; i < max_heaps; i++)
@@ -288,59 +330,93 @@ void stream_base::flush()
     stats.incomplete_heaps_flushed += n_flushed;
 }
 
+void stream_base::flush()
+{
+    std::lock_guard<std::mutex> lock(queue_mutex);
+    flush_unlocked();
+}
+
+void stream_base::stop_unlocked()
+{
+    if (!stopped)
+        stop_received();
+}
+
+void stream_base::stop()
+{
+    std::lock_guard<std::mutex> lock(queue_mutex);
+    stop_unlocked();
+}
+
 void stream_base::stop_received()
 {
+    assert(!stopped);
     stopped = true;
-    flush();
+    flush_unlocked();
 }
 
-
-stream::stream(io_service_ref io_service, bug_compat_mask bug_compat, std::size_t max_heaps)
-    : stream_base(bug_compat, max_heaps),
-    thread_pool_holder(std::move(io_service).get_shared_thread_pool()),
-    strand(*io_service), lossy(false)
-{
-}
-
-stream_stats stream::get_stats() const
+stream_stats stream_base::get_stats() const
 {
     std::lock_guard<std::mutex> stats_lock(stats_mutex);
     stream_stats ret = stats;
     return ret;
 }
 
+
+stream::stream(io_service_ref io_service, bug_compat_mask bug_compat, std::size_t max_heaps)
+    : stream_base(bug_compat, max_heaps),
+    thread_pool_holder(std::move(io_service).get_shared_thread_pool()),
+    io_service(*io_service)
+{
+}
+
 void stream::stop_received()
 {
-    // Check for already stopped, so that readers are stopped exactly once
-    if (!is_stopped())
-    {
-        stream_base::stop_received();
-        for (const auto &reader : readers)
-            reader->stop();
-    }
+    stream_base::stop_received();
+    std::lock_guard<std::mutex> lock(reader_mutex);
+    for (const auto &reader : readers)
+        reader->stop();
 }
 
 void stream::stop_impl()
 {
-    run_in_strand([this] { stop_received(); });
+    stream_base::stop();
 
-    /* Block until all readers have entered their final completion handler.
-     * Note that this cannot conflict with a previously issued emplace_reader,
-     * because its emplace_reader_callback either happens-before the
-     * stop_received call above or sees that the stream has been stopped and
-     * does not touch the readers list.
-     */
-    for (const auto &r : readers)
-        r->join();
+    std::size_t n_readers;
+    {
+        std::lock_guard<std::mutex> lock(reader_mutex);
+        /* Prevent any further calls to emplace_reader from doing anything, so
+         * that n_readers will remain accurate.
+         */
+        stop_readers = true;
+        n_readers = readers.size();
+    }
 
-    // Destroy the readers with the strand held, to ensure that the
-    // completion handlers have actually returned.
-    run_in_strand([this] { readers.clear(); });
+    // Wait until all readers have wound up all their completion handlers
+    while (n_readers > 0)
+    {
+        semaphore_get(readers_stopped);
+        n_readers--;
+    }
+
+    {
+        /* This lock is not strictly needed since no other thread can touch
+         * readers any more, but is harmless.
+         */
+        std::lock_guard<std::mutex> lock(reader_mutex);
+        readers.clear();
+    }
 }
 
 void stream::stop()
 {
     std::call_once(stop_once, [this] { stop_impl(); });
+}
+
+bool stream::is_lossy() const
+{
+    std::lock_guard<std::mutex> lock(reader_mutex);
+    return lossy;
 }
 
 stream::~stream()
@@ -352,13 +428,13 @@ stream::~stream()
 const std::uint8_t *mem_to_stream(stream_base &s, const std::uint8_t *ptr, std::size_t length)
 {
     stream_base::add_packet_state state(s);
-    while (length > 0 && !s.is_stopped())
+    while (length > 0 && !state.is_stopped())
     {
         packet_header packet;
         std::size_t size = decode_packet(packet, ptr, length);
         if (size > 0)
         {
-            s.add_packet(state, packet);
+            state.add_packet(packet);
             ptr += size;
             length -= size;
         }

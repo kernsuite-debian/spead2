@@ -1,4 +1,4 @@
-/* Copyright 2018 SKA South Africa
+/* Copyright 2018, 2019 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -44,11 +44,29 @@ inproc_queue::packet copy_packet(const packet &in)
 
 } // namespace detail
 
+void inproc_stream::async_send_packets()
+{
+    for (std::size_t i = 0; i < n_current_packets; i++)
+    {
+        inproc_queue::packet dup = detail::copy_packet(current_packets[i].pkt);
+        try
+        {
+            queue->buffer.push(std::move(dup));
+            current_packets[i].result = boost::system::error_code();
+        }
+        catch (ringbuffer_stopped &)
+        {
+            current_packets[i].result = boost::asio::error::operation_aborted;
+        }
+    }
+    get_io_service().post([this] { packets_handler(); });
+}
+
 inproc_stream::inproc_stream(
     io_service_ref io_service,
     std::shared_ptr<inproc_queue> queue,
     const stream_config &config)
-    : stream_impl<inproc_stream>(std::move(io_service), config),
+    : stream_impl<inproc_stream>(std::move(io_service), config, 1),
     queue(std::move(queue))
 {
 }

@@ -166,21 +166,21 @@ am__v_AR_1 =
 libspead2_a_AR = $(AR) $(ARFLAGS)
 libspead2_a_LIBADD =
 am_libspead2_a_OBJECTS = common_flavour.$(OBJEXT) common_ibv.$(OBJEXT) \
+	common_ibv_loader.$(OBJEXT) common_ibv_loader_utils.$(OBJEXT) \
 	common_inproc.$(OBJEXT) common_logging.$(OBJEXT) \
 	common_memcpy.$(OBJEXT) common_memory_allocator.$(OBJEXT) \
 	common_memory_pool.$(OBJEXT) common_raw_packet.$(OBJEXT) \
 	common_semaphore.$(OBJEXT) common_socket.$(OBJEXT) \
 	common_thread_pool.$(OBJEXT) recv_heap.$(OBJEXT) \
 	recv_inproc.$(OBJEXT) recv_live_heap.$(OBJEXT) \
-	recv_mem.$(OBJEXT) recv_netmap.$(OBJEXT) recv_packet.$(OBJEXT) \
-	recv_reader.$(OBJEXT) recv_ring_stream.$(OBJEXT) \
-	recv_stream.$(OBJEXT) recv_tcp.$(OBJEXT) \
-	recv_udp_base.$(OBJEXT) recv_udp.$(OBJEXT) \
-	recv_udp_ibv.$(OBJEXT) recv_udp_pcap.$(OBJEXT) \
-	send_heap.$(OBJEXT) send_inproc.$(OBJEXT) \
-	send_packet.$(OBJEXT) send_streambuf.$(OBJEXT) \
-	send_stream.$(OBJEXT) send_tcp.$(OBJEXT) send_udp.$(OBJEXT) \
-	send_udp_ibv.$(OBJEXT)
+	recv_mem.$(OBJEXT) recv_packet.$(OBJEXT) recv_reader.$(OBJEXT) \
+	recv_ring_stream.$(OBJEXT) recv_stream.$(OBJEXT) \
+	recv_tcp.$(OBJEXT) recv_udp_base.$(OBJEXT) recv_udp.$(OBJEXT) \
+	recv_udp_ibv.$(OBJEXT) recv_udp_ibv_mprq.$(OBJEXT) \
+	recv_udp_pcap.$(OBJEXT) send_heap.$(OBJEXT) \
+	send_inproc.$(OBJEXT) send_packet.$(OBJEXT) \
+	send_streambuf.$(OBJEXT) send_stream.$(OBJEXT) \
+	send_tcp.$(OBJEXT) send_udp.$(OBJEXT) send_udp_ibv.$(OBJEXT)
 libspead2_a_OBJECTS = $(am_libspead2_a_OBJECTS)
 @SPEAD2_USE_IBV_TRUE@am__EXEEXT_1 = mcdump$(EXEEXT)
 PROGRAMS = $(bin_PROGRAMS)
@@ -198,11 +198,16 @@ am_spead2_send_OBJECTS = spead2_send.$(OBJEXT)
 spead2_send_OBJECTS = $(am_spead2_send_OBJECTS)
 spead2_send_DEPENDENCIES = $(LDADD)
 am_spead2_unittest_OBJECTS = spead2_unittest-unittest_main.$(OBJEXT) \
+	spead2_unittest-unittest_logging.$(OBJEXT) \
 	spead2_unittest-unittest_memcpy.$(OBJEXT) \
 	spead2_unittest-unittest_memory_allocator.$(OBJEXT) \
 	spead2_unittest-unittest_memory_pool.$(OBJEXT) \
+	spead2_unittest-unittest_raw_packet.$(OBJEXT) \
 	spead2_unittest-unittest_recv_live_heap.$(OBJEXT) \
-	spead2_unittest-unittest_send_heap.$(OBJEXT)
+	spead2_unittest-unittest_recv_custom_memcpy.$(OBJEXT) \
+	spead2_unittest-unittest_semaphore.$(OBJEXT) \
+	spead2_unittest-unittest_send_heap.$(OBJEXT) \
+	spead2_unittest-unittest_send_streambuf.$(OBJEXT)
 spead2_unittest_OBJECTS = $(am_spead2_unittest_OBJECTS)
 spead2_unittest_DEPENDENCIES = $(LDADD)
 AM_V_P = $(am__v_P_@AM_V@)
@@ -457,9 +462,6 @@ AUTOCONF = @AUTOCONF@
 AUTOHEADER = @AUTOHEADER@
 AUTOMAKE = @AUTOMAKE@
 AWK = @AWK@
-CC = @CC@
-CCDEPMODE = @CCDEPMODE@
-CFLAGS = @CFLAGS@
 CPPFLAGS = @CPPFLAGS@
 CXX = @CXX@
 CXXDEPMODE = @CXXDEPMODE@
@@ -498,19 +500,19 @@ SHELL = @SHELL@
 SPEAD2_USE_EVENTFD = @SPEAD2_USE_EVENTFD@
 SPEAD2_USE_IBV = @SPEAD2_USE_IBV@
 SPEAD2_USE_IBV_EXP = @SPEAD2_USE_IBV_EXP@
+SPEAD2_USE_IBV_MPRQ = @SPEAD2_USE_IBV_MPRQ@
 SPEAD2_USE_MOVNTDQ = @SPEAD2_USE_MOVNTDQ@
-SPEAD2_USE_NETMAP = @SPEAD2_USE_NETMAP@
 SPEAD2_USE_PCAP = @SPEAD2_USE_PCAP@
 SPEAD2_USE_POSIX_SEMAPHORES = @SPEAD2_USE_POSIX_SEMAPHORES@
 SPEAD2_USE_PTHREAD_SETAFFINITY_NP = @SPEAD2_USE_PTHREAD_SETAFFINITY_NP@
 SPEAD2_USE_RECVMMSG = @SPEAD2_USE_RECVMMSG@
+SPEAD2_USE_SENDMMSG = @SPEAD2_USE_SENDMMSG@
 STRIP = @STRIP@
 VERSION = @VERSION@
 abs_builddir = @abs_builddir@
 abs_srcdir = @abs_srcdir@
 abs_top_builddir = @abs_top_builddir@
 abs_top_srcdir = @abs_top_srcdir@
-ac_ct_CC = @ac_ct_CC@
 ac_ct_CXX = @ac_ct_CXX@
 am__include = @am__include@
 am__leading_dot = @am__leading_dot@
@@ -567,17 +569,24 @@ spead2_bench_SOURCES = spead2_bench.cpp
 spead2_bench_LDADD = -lboost_program_options $(LDADD)
 spead2_unittest_SOURCES = \
 	unittest_main.cpp \
+	unittest_logging.cpp \
 	unittest_memcpy.cpp \
 	unittest_memory_allocator.cpp \
 	unittest_memory_pool.cpp \
+	unittest_raw_packet.cpp \
 	unittest_recv_live_heap.cpp \
-	unittest_send_heap.cpp
+	unittest_recv_custom_memcpy.cpp \
+	unittest_semaphore.cpp \
+	unittest_send_heap.cpp \
+	unittest_send_streambuf.cpp
 
 spead2_unittest_CPPFLAGS = -DBOOST_TEST_DYN_LINK $(AM_CPPFLAGS)
 spead2_unittest_LDADD = -lboost_unit_test_framework $(LDADD)
 libspead2_a_SOURCES = \
 	common_flavour.cpp \
 	common_ibv.cpp \
+	common_ibv_loader.cpp \
+	common_ibv_loader_utils.cpp \
 	common_inproc.cpp \
 	common_logging.cpp \
 	common_memcpy.cpp \
@@ -591,7 +600,6 @@ libspead2_a_SOURCES = \
 	recv_inproc.cpp \
 	recv_live_heap.cpp \
 	recv_mem.cpp \
-	recv_netmap.cpp \
 	recv_packet.cpp \
 	recv_reader.cpp \
 	recv_ring_stream.cpp \
@@ -600,6 +608,7 @@ libspead2_a_SOURCES = \
 	recv_udp_base.cpp \
 	recv_udp.cpp \
 	recv_udp_ibv.cpp \
+	recv_udp_ibv_mprq.cpp \
 	recv_udp_pcap.cpp \
 	send_heap.cpp \
 	send_inproc.cpp \
@@ -754,6 +763,8 @@ distclean-compile:
 
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/common_flavour.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/common_ibv.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/common_ibv_loader.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/common_ibv_loader_utils.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/common_inproc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/common_logging.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/common_memcpy.Po@am__quote@
@@ -768,7 +779,6 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/recv_inproc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/recv_live_heap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/recv_mem.Po@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/recv_netmap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/recv_packet.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/recv_reader.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/recv_ring_stream.Po@am__quote@
@@ -777,6 +787,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/recv_udp.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/recv_udp_base.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/recv_udp_ibv.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/recv_udp_ibv_mprq.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/recv_udp_pcap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/send_heap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/send_inproc.Po@am__quote@
@@ -789,12 +800,17 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/spead2_bench.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/spead2_recv.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/spead2_send.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/spead2_unittest-unittest_logging.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/spead2_unittest-unittest_main.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/spead2_unittest-unittest_memcpy.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/spead2_unittest-unittest_memory_allocator.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/spead2_unittest-unittest_memory_pool.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/spead2_unittest-unittest_raw_packet.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/spead2_unittest-unittest_recv_custom_memcpy.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/spead2_unittest-unittest_recv_live_heap.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/spead2_unittest-unittest_semaphore.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/spead2_unittest-unittest_send_heap.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/spead2_unittest-unittest_send_streambuf.Po@am__quote@
 
 .cpp.o:
 @am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXXCOMPILE) -MT $@ -MD -MP -MF $(DEPDIR)/$*.Tpo -c -o $@ $<
@@ -823,6 +839,20 @@ spead2_unittest-unittest_main.obj: unittest_main.cpp
 @AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='unittest_main.cpp' object='spead2_unittest-unittest_main.obj' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -c -o spead2_unittest-unittest_main.obj `if test -f 'unittest_main.cpp'; then $(CYGPATH_W) 'unittest_main.cpp'; else $(CYGPATH_W) '$(srcdir)/unittest_main.cpp'; fi`
+
+spead2_unittest-unittest_logging.o: unittest_logging.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -MT spead2_unittest-unittest_logging.o -MD -MP -MF $(DEPDIR)/spead2_unittest-unittest_logging.Tpo -c -o spead2_unittest-unittest_logging.o `test -f 'unittest_logging.cpp' || echo '$(srcdir)/'`unittest_logging.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/spead2_unittest-unittest_logging.Tpo $(DEPDIR)/spead2_unittest-unittest_logging.Po
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='unittest_logging.cpp' object='spead2_unittest-unittest_logging.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -c -o spead2_unittest-unittest_logging.o `test -f 'unittest_logging.cpp' || echo '$(srcdir)/'`unittest_logging.cpp
+
+spead2_unittest-unittest_logging.obj: unittest_logging.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -MT spead2_unittest-unittest_logging.obj -MD -MP -MF $(DEPDIR)/spead2_unittest-unittest_logging.Tpo -c -o spead2_unittest-unittest_logging.obj `if test -f 'unittest_logging.cpp'; then $(CYGPATH_W) 'unittest_logging.cpp'; else $(CYGPATH_W) '$(srcdir)/unittest_logging.cpp'; fi`
+@am__fastdepCXX_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/spead2_unittest-unittest_logging.Tpo $(DEPDIR)/spead2_unittest-unittest_logging.Po
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='unittest_logging.cpp' object='spead2_unittest-unittest_logging.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -c -o spead2_unittest-unittest_logging.obj `if test -f 'unittest_logging.cpp'; then $(CYGPATH_W) 'unittest_logging.cpp'; else $(CYGPATH_W) '$(srcdir)/unittest_logging.cpp'; fi`
 
 spead2_unittest-unittest_memcpy.o: unittest_memcpy.cpp
 @am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -MT spead2_unittest-unittest_memcpy.o -MD -MP -MF $(DEPDIR)/spead2_unittest-unittest_memcpy.Tpo -c -o spead2_unittest-unittest_memcpy.o `test -f 'unittest_memcpy.cpp' || echo '$(srcdir)/'`unittest_memcpy.cpp
@@ -866,6 +896,20 @@ spead2_unittest-unittest_memory_pool.obj: unittest_memory_pool.cpp
 @AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -c -o spead2_unittest-unittest_memory_pool.obj `if test -f 'unittest_memory_pool.cpp'; then $(CYGPATH_W) 'unittest_memory_pool.cpp'; else $(CYGPATH_W) '$(srcdir)/unittest_memory_pool.cpp'; fi`
 
+spead2_unittest-unittest_raw_packet.o: unittest_raw_packet.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -MT spead2_unittest-unittest_raw_packet.o -MD -MP -MF $(DEPDIR)/spead2_unittest-unittest_raw_packet.Tpo -c -o spead2_unittest-unittest_raw_packet.o `test -f 'unittest_raw_packet.cpp' || echo '$(srcdir)/'`unittest_raw_packet.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/spead2_unittest-unittest_raw_packet.Tpo $(DEPDIR)/spead2_unittest-unittest_raw_packet.Po
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='unittest_raw_packet.cpp' object='spead2_unittest-unittest_raw_packet.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -c -o spead2_unittest-unittest_raw_packet.o `test -f 'unittest_raw_packet.cpp' || echo '$(srcdir)/'`unittest_raw_packet.cpp
+
+spead2_unittest-unittest_raw_packet.obj: unittest_raw_packet.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -MT spead2_unittest-unittest_raw_packet.obj -MD -MP -MF $(DEPDIR)/spead2_unittest-unittest_raw_packet.Tpo -c -o spead2_unittest-unittest_raw_packet.obj `if test -f 'unittest_raw_packet.cpp'; then $(CYGPATH_W) 'unittest_raw_packet.cpp'; else $(CYGPATH_W) '$(srcdir)/unittest_raw_packet.cpp'; fi`
+@am__fastdepCXX_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/spead2_unittest-unittest_raw_packet.Tpo $(DEPDIR)/spead2_unittest-unittest_raw_packet.Po
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='unittest_raw_packet.cpp' object='spead2_unittest-unittest_raw_packet.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -c -o spead2_unittest-unittest_raw_packet.obj `if test -f 'unittest_raw_packet.cpp'; then $(CYGPATH_W) 'unittest_raw_packet.cpp'; else $(CYGPATH_W) '$(srcdir)/unittest_raw_packet.cpp'; fi`
+
 spead2_unittest-unittest_recv_live_heap.o: unittest_recv_live_heap.cpp
 @am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -MT spead2_unittest-unittest_recv_live_heap.o -MD -MP -MF $(DEPDIR)/spead2_unittest-unittest_recv_live_heap.Tpo -c -o spead2_unittest-unittest_recv_live_heap.o `test -f 'unittest_recv_live_heap.cpp' || echo '$(srcdir)/'`unittest_recv_live_heap.cpp
 @am__fastdepCXX_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/spead2_unittest-unittest_recv_live_heap.Tpo $(DEPDIR)/spead2_unittest-unittest_recv_live_heap.Po
@@ -880,6 +924,34 @@ spead2_unittest-unittest_recv_live_heap.obj: unittest_recv_live_heap.cpp
 @AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -c -o spead2_unittest-unittest_recv_live_heap.obj `if test -f 'unittest_recv_live_heap.cpp'; then $(CYGPATH_W) 'unittest_recv_live_heap.cpp'; else $(CYGPATH_W) '$(srcdir)/unittest_recv_live_heap.cpp'; fi`
 
+spead2_unittest-unittest_recv_custom_memcpy.o: unittest_recv_custom_memcpy.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -MT spead2_unittest-unittest_recv_custom_memcpy.o -MD -MP -MF $(DEPDIR)/spead2_unittest-unittest_recv_custom_memcpy.Tpo -c -o spead2_unittest-unittest_recv_custom_memcpy.o `test -f 'unittest_recv_custom_memcpy.cpp' || echo '$(srcdir)/'`unittest_recv_custom_memcpy.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/spead2_unittest-unittest_recv_custom_memcpy.Tpo $(DEPDIR)/spead2_unittest-unittest_recv_custom_memcpy.Po
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='unittest_recv_custom_memcpy.cpp' object='spead2_unittest-unittest_recv_custom_memcpy.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -c -o spead2_unittest-unittest_recv_custom_memcpy.o `test -f 'unittest_recv_custom_memcpy.cpp' || echo '$(srcdir)/'`unittest_recv_custom_memcpy.cpp
+
+spead2_unittest-unittest_recv_custom_memcpy.obj: unittest_recv_custom_memcpy.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -MT spead2_unittest-unittest_recv_custom_memcpy.obj -MD -MP -MF $(DEPDIR)/spead2_unittest-unittest_recv_custom_memcpy.Tpo -c -o spead2_unittest-unittest_recv_custom_memcpy.obj `if test -f 'unittest_recv_custom_memcpy.cpp'; then $(CYGPATH_W) 'unittest_recv_custom_memcpy.cpp'; else $(CYGPATH_W) '$(srcdir)/unittest_recv_custom_memcpy.cpp'; fi`
+@am__fastdepCXX_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/spead2_unittest-unittest_recv_custom_memcpy.Tpo $(DEPDIR)/spead2_unittest-unittest_recv_custom_memcpy.Po
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='unittest_recv_custom_memcpy.cpp' object='spead2_unittest-unittest_recv_custom_memcpy.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -c -o spead2_unittest-unittest_recv_custom_memcpy.obj `if test -f 'unittest_recv_custom_memcpy.cpp'; then $(CYGPATH_W) 'unittest_recv_custom_memcpy.cpp'; else $(CYGPATH_W) '$(srcdir)/unittest_recv_custom_memcpy.cpp'; fi`
+
+spead2_unittest-unittest_semaphore.o: unittest_semaphore.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -MT spead2_unittest-unittest_semaphore.o -MD -MP -MF $(DEPDIR)/spead2_unittest-unittest_semaphore.Tpo -c -o spead2_unittest-unittest_semaphore.o `test -f 'unittest_semaphore.cpp' || echo '$(srcdir)/'`unittest_semaphore.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/spead2_unittest-unittest_semaphore.Tpo $(DEPDIR)/spead2_unittest-unittest_semaphore.Po
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='unittest_semaphore.cpp' object='spead2_unittest-unittest_semaphore.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -c -o spead2_unittest-unittest_semaphore.o `test -f 'unittest_semaphore.cpp' || echo '$(srcdir)/'`unittest_semaphore.cpp
+
+spead2_unittest-unittest_semaphore.obj: unittest_semaphore.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -MT spead2_unittest-unittest_semaphore.obj -MD -MP -MF $(DEPDIR)/spead2_unittest-unittest_semaphore.Tpo -c -o spead2_unittest-unittest_semaphore.obj `if test -f 'unittest_semaphore.cpp'; then $(CYGPATH_W) 'unittest_semaphore.cpp'; else $(CYGPATH_W) '$(srcdir)/unittest_semaphore.cpp'; fi`
+@am__fastdepCXX_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/spead2_unittest-unittest_semaphore.Tpo $(DEPDIR)/spead2_unittest-unittest_semaphore.Po
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='unittest_semaphore.cpp' object='spead2_unittest-unittest_semaphore.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -c -o spead2_unittest-unittest_semaphore.obj `if test -f 'unittest_semaphore.cpp'; then $(CYGPATH_W) 'unittest_semaphore.cpp'; else $(CYGPATH_W) '$(srcdir)/unittest_semaphore.cpp'; fi`
+
 spead2_unittest-unittest_send_heap.o: unittest_send_heap.cpp
 @am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -MT spead2_unittest-unittest_send_heap.o -MD -MP -MF $(DEPDIR)/spead2_unittest-unittest_send_heap.Tpo -c -o spead2_unittest-unittest_send_heap.o `test -f 'unittest_send_heap.cpp' || echo '$(srcdir)/'`unittest_send_heap.cpp
 @am__fastdepCXX_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/spead2_unittest-unittest_send_heap.Tpo $(DEPDIR)/spead2_unittest-unittest_send_heap.Po
@@ -893,6 +965,20 @@ spead2_unittest-unittest_send_heap.obj: unittest_send_heap.cpp
 @AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='unittest_send_heap.cpp' object='spead2_unittest-unittest_send_heap.obj' libtool=no @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -c -o spead2_unittest-unittest_send_heap.obj `if test -f 'unittest_send_heap.cpp'; then $(CYGPATH_W) 'unittest_send_heap.cpp'; else $(CYGPATH_W) '$(srcdir)/unittest_send_heap.cpp'; fi`
+
+spead2_unittest-unittest_send_streambuf.o: unittest_send_streambuf.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -MT spead2_unittest-unittest_send_streambuf.o -MD -MP -MF $(DEPDIR)/spead2_unittest-unittest_send_streambuf.Tpo -c -o spead2_unittest-unittest_send_streambuf.o `test -f 'unittest_send_streambuf.cpp' || echo '$(srcdir)/'`unittest_send_streambuf.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/spead2_unittest-unittest_send_streambuf.Tpo $(DEPDIR)/spead2_unittest-unittest_send_streambuf.Po
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='unittest_send_streambuf.cpp' object='spead2_unittest-unittest_send_streambuf.o' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -c -o spead2_unittest-unittest_send_streambuf.o `test -f 'unittest_send_streambuf.cpp' || echo '$(srcdir)/'`unittest_send_streambuf.cpp
+
+spead2_unittest-unittest_send_streambuf.obj: unittest_send_streambuf.cpp
+@am__fastdepCXX_TRUE@	$(AM_V_CXX)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -MT spead2_unittest-unittest_send_streambuf.obj -MD -MP -MF $(DEPDIR)/spead2_unittest-unittest_send_streambuf.Tpo -c -o spead2_unittest-unittest_send_streambuf.obj `if test -f 'unittest_send_streambuf.cpp'; then $(CYGPATH_W) 'unittest_send_streambuf.cpp'; else $(CYGPATH_W) '$(srcdir)/unittest_send_streambuf.cpp'; fi`
+@am__fastdepCXX_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/spead2_unittest-unittest_send_streambuf.Tpo $(DEPDIR)/spead2_unittest-unittest_send_streambuf.Po
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	$(AM_V_CXX)source='unittest_send_streambuf.cpp' object='spead2_unittest-unittest_send_streambuf.obj' libtool=no @AMDEPBACKSLASH@
+@AMDEP_TRUE@@am__fastdepCXX_FALSE@	DEPDIR=$(DEPDIR) $(CXXDEPMODE) $(depcomp) @AMDEPBACKSLASH@
+@am__fastdepCXX_FALSE@	$(AM_V_CXX@am__nodep@)$(CXX) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(spead2_unittest_CPPFLAGS) $(CPPFLAGS) $(AM_CXXFLAGS) $(CXXFLAGS) -c -o spead2_unittest-unittest_send_streambuf.obj `if test -f 'unittest_send_streambuf.cpp'; then $(CYGPATH_W) 'unittest_send_streambuf.cpp'; else $(CYGPATH_W) '$(srcdir)/unittest_send_streambuf.cpp'; fi`
 
 ID: $(am__tagged_files)
 	$(am__define_uniq_tagged_files); mkid -fID $$unique

@@ -1,4 +1,4 @@
-/* Copyright 2018 SKA South Africa
+/* Copyright 2018, 2019 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -48,24 +48,9 @@ class inproc_stream : public stream_impl<inproc_stream>
 {
 private:
     friend class stream_impl<inproc_stream>;
-
-    template<typename Handler>
-    void async_send_packet(const packet &pkt, Handler &&handler)
-    {
-        inproc_queue::packet dup = detail::copy_packet(pkt);
-        std::size_t size = dup.size;
-        try
-        {
-            queue->buffer.push(std::move(dup));
-            get_io_service().post(std::bind(handler, boost::system::error_code(), size));
-        }
-        catch (ringbuffer_stopped)
-        {
-            get_io_service().post(std::bind(handler, boost::asio::error::operation_aborted, 0));
-        }
-    }
-
     std::shared_ptr<inproc_queue> queue;
+
+    void async_send_packets();
 
 public:
     /// Constructor

@@ -1,4 +1,4 @@
-/* Copyright 2016, 2017 SKA South Africa
+/* Copyright 2016-2020 SKA South Africa
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -25,10 +25,14 @@
 # define _GNU_SOURCE
 #endif
 #include <spead2/common_features.h>
+#include <spead2/common_ibv_loader.h>
 #include <memory>
+#include <vector>
+#include <cstdint>
 #include <infiniband/verbs.h>
 #include <rdma/rdma_cma.h>
 #include <boost/asio.hpp>
+#include <system_error>
 
 #if SPEAD2_USE_IBV
 
@@ -57,6 +61,14 @@ struct rdma_event_channel_deleter
     void operator()(rdma_event_channel *event_channel)
     {
         rdma_destroy_event_channel(event_channel);
+    }
+};
+
+struct ibv_context_deleter
+{
+    void operator()(ibv_context *ctx)
+    {
+        ibv_close_device(ctx);
     }
 };
 
@@ -108,6 +120,46 @@ struct ibv_flow_deleter
     }
 };
 
+#if SPEAD2_USE_IBV_MPRQ
+
+struct ibv_exp_wq_deleter
+{
+    void operator()(ibv_exp_wq *wq)
+    {
+        ibv_exp_destroy_wq(wq);
+    }
+};
+
+struct ibv_exp_rwq_ind_table_deleter
+{
+    void operator()(ibv_exp_rwq_ind_table *table)
+    {
+        ibv_exp_destroy_rwq_ind_table(table);
+    }
+};
+
+class ibv_intf_deleter
+{
+private:
+    struct ibv_context *context;
+
+public:
+    explicit ibv_intf_deleter(struct ibv_context *context = nullptr) noexcept;
+    void operator()(void *intf);
+};
+
+class ibv_exp_res_domain_deleter
+{
+private:
+    struct ibv_context *context;
+
+public:
+    explicit ibv_exp_res_domain_deleter(struct ibv_context *context = nullptr) noexcept;
+    void operator()(ibv_exp_res_domain *res_domain);
+};
+
+#endif
+
 } // namespace detail
 
 class rdma_event_channel_t : public std::unique_ptr<rdma_event_channel, detail::rdma_event_channel_deleter>
@@ -123,6 +175,24 @@ public:
     rdma_cm_id_t(const rdma_event_channel_t &cm_id, void *context, rdma_port_space ps);
 
     void bind_addr(const boost::asio::ip::address &addr);
+    ibv_device_attr query_device() const;
+#if SPEAD2_USE_IBV_EXP
+    ibv_exp_device_attr exp_query_device() const;
+#endif
+};
+
+/* This class is not intended to be used for anything. However, the mlx5 driver
+ * will only enable multicast loopback if there at least 2 device contexts, and
+ * multiple instances of rdma_cm_id_t bound to the same device end up with the
+ * same device context, so constructing one is a way to force multicast
+ * loopback to function.
+ */
+class ibv_context_t : public std::unique_ptr<ibv_context, detail::ibv_context_deleter>
+{
+public:
+    ibv_context_t() = default;
+    explicit ibv_context_t(struct ibv_device *device);
+    explicit ibv_context_t(const boost::asio::ip::address &addr);
 };
 
 class ibv_comp_channel_t : public std::unique_ptr<ibv_comp_channel, detail::ibv_comp_channel_deleter>
@@ -133,7 +203,8 @@ public:
 
     /// Create a file descriptor that is ready to read when the completion channel has events
     boost::asio::posix::stream_descriptor wrap(boost::asio::io_service &io_service) const;
-    void get_event(ibv_cq **cq, void **context);
+    /// Get an event, if one is available
+    bool get_event(ibv_cq **cq, void **context);
 };
 
 class ibv_cq_t : public std::unique_ptr<ibv_cq, detail::ibv_cq_deleter>
@@ -172,6 +243,9 @@ class ibv_qp_t : public std::unique_ptr<ibv_qp, detail::ibv_qp_deleter>
 public:
     ibv_qp_t() = default;
     ibv_qp_t(const ibv_pd_t &pd, ibv_qp_init_attr *init_attr);
+#if SPEAD2_USE_IBV_MPRQ
+    ibv_qp_t(const rdma_cm_id_t &cm_id, ibv_exp_qp_init_attr *init_attr);
+#endif
 
     void modify(ibv_qp_attr *attr, int attr_mask);
     void modify(ibv_qp_state qp_state);
@@ -195,6 +269,83 @@ public:
     ibv_flow_t() = default;
     ibv_flow_t(const ibv_qp_t &qp, ibv_flow_attr *flow);
 };
+
+/**
+ * Create a single flow rule.
+ *
+ * @pre The endpoint contains an IPv4 address.
+ */
+ibv_flow_t create_flow(
+    const ibv_qp_t &qp, const boost::asio::ip::udp::endpoint &endpoint,
+    int port_num);
+
+/**
+ * Create flow rules to subscribe to a given set of endpoints.
+ *
+ * If the address in an endpoint is unspecified, it will not be filtered on.
+ * Multicast addresses are supported; unicast addresses must have corresponding
+ * interfaces (which are used to retrieve the corresponding MAC addresses).
+ *
+ * @pre The @a endpoints are IPv4 addresses.
+ */
+std::vector<ibv_flow_t> create_flows(
+    const ibv_qp_t &qp, const std::vector<boost::asio::ip::udp::endpoint> &endpoints,
+    int port_num);
+
+#if SPEAD2_USE_IBV_MPRQ
+
+class ibv_exp_query_intf_error_category : public std::error_category
+{
+public:
+    virtual const char *name() const noexcept override;
+    virtual std::string message(int condition) const override;
+    virtual std::error_condition default_error_condition(int condition) const noexcept override;
+};
+
+std::error_category &ibv_exp_query_intf_category();
+
+class ibv_exp_cq_family_v1_t : public std::unique_ptr<ibv_exp_cq_family_v1, detail::ibv_intf_deleter>
+{
+public:
+    ibv_exp_cq_family_v1_t() = default;
+    ibv_exp_cq_family_v1_t(const rdma_cm_id_t &cm_id, const ibv_cq_t &cq);
+};
+
+class ibv_exp_wq_t : public std::unique_ptr<ibv_exp_wq, detail::ibv_exp_wq_deleter>
+{
+public:
+    ibv_exp_wq_t() = default;
+    ibv_exp_wq_t(const rdma_cm_id_t &cm_id, ibv_exp_wq_init_attr *attr);
+
+    void modify(ibv_exp_wq_state state);
+};
+
+class ibv_exp_wq_family_t : public std::unique_ptr<ibv_exp_wq_family, detail::ibv_intf_deleter>
+{
+public:
+    ibv_exp_wq_family_t() = default;
+    ibv_exp_wq_family_t(const rdma_cm_id_t &cm_id, const ibv_exp_wq_t &wq);
+};
+
+class ibv_exp_rwq_ind_table_t : public std::unique_ptr<ibv_exp_rwq_ind_table, detail::ibv_exp_rwq_ind_table_deleter>
+{
+public:
+    ibv_exp_rwq_ind_table_t() = default;
+    ibv_exp_rwq_ind_table_t(const rdma_cm_id_t &cm_id, ibv_exp_rwq_ind_table_init_attr *attr);
+};
+
+/// Construct a table with a single entry
+ibv_exp_rwq_ind_table_t create_rwq_ind_table(
+    const rdma_cm_id_t &cm_id, const ibv_pd_t &pd, const ibv_exp_wq_t &wq);
+
+class ibv_exp_res_domain_t : public std::unique_ptr<ibv_exp_res_domain, detail::ibv_exp_res_domain_deleter>
+{
+public:
+    ibv_exp_res_domain_t() = default;
+    ibv_exp_res_domain_t(const rdma_cm_id_t &cm_id, ibv_exp_res_domain_init_attr *attr);
+};
+
+#endif // SPEAD2_USE_IBV_MPRQ
 
 } // namespace spead2
 
