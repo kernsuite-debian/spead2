@@ -1,4 +1,4 @@
-/* Copyright 2016, 2017, 2019 SKA South Africa
+/* Copyright 2016, 2017, 2019-2020 National Research Foundation (SARAO)
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -24,10 +24,13 @@
 #include <cstdlib>
 #include <cstdint>
 #include <memory>
+#include <random>
 #include <boost/program_options.hpp>
 #include <boost/asio.hpp>
 #include <spead2/common_thread_pool.h>
 #include <spead2/common_semaphore.h>
+#include <spead2/common_endian.h>
+#include <spead2/common_memory_allocator.h>
 #include <spead2/send_stream.h>
 #include <spead2/send_udp.h>
 #include <spead2/send_tcp.h>
@@ -35,6 +38,7 @@
 #if SPEAD2_USE_IBV
 # include <spead2/send_udp_ibv.h>
 #endif
+#include "spead2_cmdline.h"
 
 namespace po = boost::program_options;
 namespace asio = boost::asio;
@@ -43,50 +47,19 @@ using boost::asio::ip::tcp;
 
 struct options
 {
+    spead2::protocol_options protocol;
+    spead2::send::sender_options sender;
     std::size_t heap_size = 4194304;
     std::size_t items = 1;
     std::int64_t heaps = -1;
-    bool pyspead = false;
-    bool tcp = false;
-    std::string bind;
-    int addr_bits = 40;
-    std::size_t packet = spead2::send::stream_config::default_max_packet_size;
-    std::size_t buffer;
-    std::size_t burst = spead2::send::stream_config::default_burst_size;
-    double burst_rate_ratio = spead2::send::stream_config::default_burst_rate_ratio;
-    std::size_t max_heaps = spead2::send::stream_config::default_max_heaps;
-    double rate = 0.0;
-    int ttl = 1;
-#if SPEAD2_USE_IBV
-    bool ibv = false;
-    int ibv_comp_vector = 0;
-    int ibv_max_poll = spead2::send::udp_ibv_stream::default_max_poll;
-#endif
-    std::string host;
-    std::string port;
+    bool verify = false;
+    std::vector<std::string> dest;
 };
 
 static void usage(std::ostream &o, const po::options_description &desc)
 {
-    o << "Usage: spead2_send [options] <host> <port>\n";
+    o << "Usage: spead2_send [options] <host>:<port> [<host>:<port> ...]\n";
     o << desc;
-}
-
-template<typename T>
-static po::typed_value<T> *make_opt(T &var)
-{
-    return po::value<T>(&var)->default_value(var);
-}
-
-static po::typed_value<bool> *make_opt(bool &var)
-{
-    return po::bool_switch(&var)->default_value(var);
-}
-
-template<typename T>
-static po::typed_value<T> *make_opt_no_default(T &var)
-{
-    return po::value<T>(&var);
 }
 
 static options parse_args(int argc, const char **argv)
@@ -94,36 +67,24 @@ static options parse_args(int argc, const char **argv)
     options opts;
     po::options_description desc, hidden, all;
     desc.add_options()
-        ("heap-size", make_opt(opts.heap_size), "Payload size for heap")
-        ("items", make_opt(opts.items), "Number of items per heap")
-        ("heaps", make_opt(opts.heaps), "Number of data heaps to send (-1=infinite)")
-        ("pyspead", make_opt(opts.pyspead), "Be bug-compatible with PySPEAD")
-        ("addr-bits", make_opt(opts.addr_bits), "Heap address bits")
-        ("tcp", make_opt(opts.tcp), "Use TCP instead than UDP")
-        ("bind", make_opt(opts.bind), "Local address to bind sockets to")
-        ("packet", make_opt(opts.packet), "Maximum packet size to send")
-        ("buffer", make_opt_no_default(opts.buffer), "Socket buffer size")
-        ("burst", make_opt(opts.burst), "Burst size")
-        ("burst-rate-ratio", make_opt(opts.burst_rate_ratio), "Hard rate limit, relative to --rate")
-        ("max-heaps", make_opt(opts.max_heaps), "Maximum heaps in flight")
-        ("rate", make_opt(opts.rate), "Transmission rate bound (Gb/s)")
-        ("ttl", make_opt(opts.ttl), "TTL for multicast target")
-#if SPEAD2_USE_IBV
-        ("ibv", make_opt(opts.ibv), "Use ibverbs")
-        ("ibv-vector", make_opt(opts.ibv_comp_vector), "Interrupt vector (-1 for polled)")
-        ("ibv-max-poll", make_opt(opts.ibv_max_poll), "Maximum number of times to poll in a row")
-#endif
+        ("heap-size", spead2::make_value_semantic(&opts.heap_size), "Payload size for heap")
+        ("items", spead2::make_value_semantic(&opts.items), "Number of items per heap")
+        ("heaps", spead2::make_value_semantic(&opts.heaps), "Number of data heaps to send (-1=infinite)")
+        ("verify", spead2::make_value_semantic(&opts.verify), "Insert payload values that receiver can verify")
     ;
+    spead2::option_adder adder(desc);
+    opts.protocol.enumerate(adder);
+    opts.sender.enumerate(adder);
     hidden.add_options()
-        ("host", make_opt_no_default(opts.host), "Destination host")
-        ("port", make_opt_no_default(opts.port), "Destination port")
+        ("destination", spead2::make_value_semantic(&opts.dest), "Destination host:port")
     ;
+    desc.add_options()
+        ("help,h", "Show help text");
     all.add(desc);
     all.add(hidden);
 
     po::positional_options_description positional;
-    positional.add("host", 1);
-    positional.add("port", 1);
+    positional.add("destination", -1);
     try
     {
         po::variables_map vm;
@@ -138,19 +99,11 @@ static options parse_args(int argc, const char **argv)
             usage(std::cout, desc);
             std::exit(0);
         }
-        if (!vm.count("host") || !vm.count("port"))
-            throw po::error("too few positional options have been specified on the command line");
-        if (!vm.count("buffer"))
-        {
-            if (opts.tcp)
-                opts.buffer = spead2::send::tcp_stream::default_buffer_size;
-            else
-                opts.buffer = spead2::send::udp_stream::default_buffer_size;
-        }
-#if SPEAD2_USE_IBV
-        if (opts.ibv && opts.bind.empty())
-            throw po::error("--ibv requires --bind");
-#endif
+        if (!vm.count("destination"))
+            throw po::error("at least one destination is required");
+        if (opts.dest.size() > 1 && opts.protocol.tcp)
+            throw po::error("only one destination is supported with TCP");
+        opts.sender.notify(opts.protocol);
         return opts;
     }
     catch (po::error &e)
@@ -167,52 +120,67 @@ namespace
 class sender
 {
 private:
-    spead2::send::stream &stream;
     const std::size_t max_heaps;
+    const std::size_t n_substreams;
     const std::int64_t n_heaps;
     const spead2::flavour flavour;
+    const std::size_t elements;                              // number of element_t's per item
+    const bool verify;
 
-    spead2::send::heap first_heap;                           // has descriptors
+    std::vector<spead2::send::heap> first_heaps;             // have descriptors
     std::vector<spead2::send::heap> heaps;
     spead2::send::heap last_heap;                            // has end-of-stream marker
-    typedef std::pair<float, float> item_t;
-    std::vector<std::unique_ptr<item_t[]>> values;
+    typedef std::uint32_t element_t;
+    spead2::memory_allocator::pointer storage;               // data for all heaps
+    std::vector<std::vector<element_t *>> pointers;          // start of data per item per heap
+    std::minstd_rand generator;
 
     std::uint64_t bytes_transferred = 0;
     boost::system::error_code error;
     spead2::semaphore done_sem{0};
 
-    const spead2::send::heap &get_heap(std::uint64_t idx) const noexcept;
+    const spead2::send::heap &get_heap(std::uint64_t idx) noexcept;
 
-    void callback(std::uint64_t idx, const boost::system::error_code &ec, std::size_t bytes_transferred);
+    void callback(spead2::send::stream &stream,
+                  std::uint64_t idx,
+                  const boost::system::error_code &ec,
+                  std::size_t bytes_transferred);
 
 public:
-    sender(spead2::send::stream &stream, const options &opts);
-    std::uint64_t run();
+    explicit sender(const options &opts);
+    std::uint64_t run(spead2::send::stream &stream);
+
+    std::vector<std::pair<const void *, std::size_t>> memory_regions() const;
 };
 
-sender::sender(spead2::send::stream &stream, const options &opts)
-    : stream(stream),
-    max_heaps((opts.heaps < 0 || std::uint64_t(opts.heaps) >= opts.max_heaps)
-              ? opts.max_heaps : opts.heaps + 1),
+sender::sender(const options &opts)
+    : max_heaps((opts.heaps < 0
+                 || std::uint64_t(opts.heaps) + opts.dest.size() > opts.sender.max_heaps)
+                ? opts.sender.max_heaps : opts.heaps + opts.dest.size()),
+    n_substreams(opts.dest.size()),
     n_heaps(opts.heaps),
-    flavour(spead2::maximum_version, 64, opts.addr_bits,
-            opts.pyspead ? spead2::BUG_COMPAT_PYSPEAD_0_5_2 : 0),
-    first_heap(flavour),
-    last_heap(flavour)
+    elements(opts.heap_size / (opts.items * sizeof(element_t))),
+    verify(opts.verify),
+    last_heap(opts.sender.make_flavour(opts.protocol))
 {
+    first_heaps.reserve(max_heaps);
     heaps.reserve(max_heaps);
     for (std::size_t i = 0; i < max_heaps; i++)
+    {
+        first_heaps.emplace_back(flavour);
         heaps.emplace_back(flavour);
+    }
 
-    const std::size_t elements = opts.heap_size / (opts.items * sizeof(item_t));
-    const std::size_t heap_size = elements * opts.items * sizeof(item_t);
+    const std::size_t item_size = elements * sizeof(element_t);
+    const std::size_t heap_size = item_size * opts.items;
     if (heap_size != opts.heap_size)
     {
         std::cerr << "Heap size is not an exact multiple: using " << heap_size << " instead of " << opts.heap_size << '\n';
     }
 
-    values.reserve(opts.items);
+    auto allocator = std::make_shared<spead2::mmap_allocator>(0, true);
+    storage = allocator->allocate(heap_size * max_heaps, nullptr);
+
     for (std::size_t i = 0; i < opts.items; i++)
     {
         spead2::descriptor d;
@@ -222,30 +190,57 @@ sender::sender(spead2::send::stream &stream, const options &opts)
         d.name = sstr.str();
         d.description = "A test item with arbitrary value";
         sstr.str("");
-        sstr << "{'shape': (" << elements << ",), 'fortran_order': False, 'descr': '<c8'}";
+        sstr << "{'shape': (" << elements << ",), 'fortran_order': False, 'descr': '>u4'}";
         d.numpy_header = sstr.str();
-        first_heap.add_descriptor(d);
-        std::unique_ptr<item_t[]> item(new item_t[elements]);
-        item_t *ptr = item.get();
-        values.push_back(std::move(item));
         for (std::size_t j = 0; j < max_heaps; j++)
-            heaps[j].add_item(0x1000 + i, ptr, elements * sizeof(item_t), true);
-        first_heap.add_item(0x1000 + i, ptr, elements * sizeof(item_t), true);
+            first_heaps[j].add_descriptor(d);
+    }
+
+    pointers.resize(max_heaps);
+    for (std::size_t i = 0; i < max_heaps; i++)
+    {
+        pointers[i].resize(opts.items);
+        for (std::size_t j = 0; j < opts.items; j++)
+        {
+            pointers[i][j] = reinterpret_cast<element_t *>(
+                storage.get() + i * heap_size + j * item_size);
+            first_heaps[i].add_item(0x1000 + j, pointers[i][j], item_size, true);
+            heaps[i].add_item(0x1000 + j, pointers[i][j], item_size, true);
+        }
     }
     last_heap.add_end();
 }
 
-const spead2::send::heap &sender::get_heap(std::uint64_t idx) const noexcept
+std::vector<std::pair<const void *, std::size_t>> sender::memory_regions() const
 {
-    if (idx == 0)
-        return first_heap;
-    else if (n_heaps >= 0 && idx == std::uint64_t(n_heaps))
-        return last_heap;
-    else
-        return heaps[idx % max_heaps];
+    return {{storage.get(), max_heaps * pointers[0].size() * elements * sizeof(element_t)}};
 }
 
-void sender::callback(std::uint64_t idx, const boost::system::error_code &ec, std::size_t bytes_transferred)
+const spead2::send::heap &sender::get_heap(std::uint64_t idx) noexcept
+{
+    spead2::send::heap *heap;
+    if (idx < n_substreams)
+        heap = &first_heaps[idx % max_heaps];
+    else if (n_heaps >= 0 && idx >= std::uint64_t(n_heaps))
+        return last_heap;
+    else
+        heap = &heaps[idx % max_heaps];
+
+    if (verify)
+    {
+        const std::vector<element_t *> &ptrs = pointers[idx % max_heaps];
+        // Fill in random values to be checked by the receiver
+        for (std::size_t i = 0; i < ptrs.size(); i++)
+            for (std::size_t j = 0; j < elements; j++)
+                ptrs[i][j] = spead2::htobe(std::uint32_t(generator()));
+    }
+    return *heap;
+}
+
+void sender::callback(spead2::send::stream &stream,
+                      std::uint64_t idx,
+                      const boost::system::error_code &ec,
+                      std::size_t bytes_transferred)
 {
     this->bytes_transferred += bytes_transferred;
     if (ec && !error)
@@ -256,30 +251,34 @@ void sender::callback(std::uint64_t idx, const boost::system::error_code &ec, st
         return;
     }
 
-    if (n_heaps == -1 || std::uint64_t(n_heaps) - idx >= max_heaps)
+    idx += max_heaps;
+    if (n_heaps == -1 || idx < std::uint64_t(n_heaps) + n_substreams)
     {
-        idx += max_heaps;
-        stream.async_send_heap(get_heap(idx), [this, idx] (const boost::system::error_code &ec, std::size_t bytes_transferred) {
-            callback(idx, ec, bytes_transferred); });
+        stream.async_send_heap(
+            get_heap(idx),
+            [this, &stream, idx] (const boost::system::error_code &ec, std::size_t bytes_transferred) {
+                callback(stream, idx, ec, bytes_transferred);
+            }, -1, idx % n_substreams);
     }
     else
         done_sem.put();
 }
 
-std::uint64_t sender::run()
+std::uint64_t sender::run(spead2::send::stream &stream)
 {
     bytes_transferred = 0;
     error = boost::system::error_code();
     /* Send the initial heaps from the worker thread. This ensures that no
      * callbacks can happen until the initial heaps are all sent, which would
-     * otherwise lead to heaps being queued out of order. For this benchmark it
-     * doesn't really matter since the heaps are all the same, but it makes it
-     * a more realistic benchmark.
+     * otherwise lead to heaps being queued out of order.
      */
-    stream.get_io_service().post([this] {
+    stream.get_io_service().post([this, &stream] {
         for (int i = 0; i < max_heaps; i++)
-            stream.async_send_heap(get_heap(i), [this, i] (const boost::system::error_code &ec, std::size_t bytes_transferred) {
-                callback(i, ec, bytes_transferred); });
+            stream.async_send_heap(
+                get_heap(i),
+                [this, &stream, i] (const boost::system::error_code &ec, std::size_t bytes_transferred) {
+                    callback(stream, i, ec, bytes_transferred);
+                }, -1, i % n_substreams);
     });
     for (int i = 0; i < max_heaps; i++)
         semaphore_get(done_sem);
@@ -290,12 +289,10 @@ std::uint64_t sender::run()
 
 } // anonymous namespace
 
-static int run(spead2::send::stream &stream, const options &opts)
+static int run(spead2::send::stream &stream, sender &s)
 {
-    sender s(stream, opts);
-
     auto start_time = std::chrono::high_resolution_clock::now();
-    std::uint64_t sent_bytes = s.run();
+    std::uint64_t sent_bytes = s.run(stream);
     auto stop_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = stop_time - start_time;
     double elapsed_s = elapsed.count();
@@ -306,77 +303,33 @@ static int run(spead2::send::stream &stream, const options &opts)
 }
 
 template <typename Proto>
-static boost::asio::ip::basic_endpoint<Proto> get_endpoint(
+static std::vector<boost::asio::ip::basic_endpoint<Proto>> get_endpoints(
     boost::asio::io_service &io_service, const options &opts)
 {
     typedef boost::asio::ip::basic_resolver<Proto> resolver_type;
     resolver_type resolver(io_service);
-    typename resolver_type::query query(opts.host, opts.port);
-    return *resolver.resolve(query);
+    std::vector<boost::asio::ip::basic_endpoint<Proto>> ans;
+    ans.reserve(opts.dest.size());
+    for (const std::string &dest : opts.dest)
+    {
+        auto colon = dest.rfind(':');
+        if (colon == std::string::npos)
+            throw std::runtime_error("Destination '" + dest + "' does not have the format host:port");
+        typename resolver_type::query query(dest.substr(0, colon), dest.substr(colon + 1));
+        ans.push_back(*resolver.resolve(query));
+    }
+    return ans;
 }
 
 int main(int argc, const char **argv)
 {
     options opts = parse_args(argc, argv);
 
-    spead2::thread_pool thread_pool(1);
-    spead2::send::stream_config config(
-        opts.packet, opts.rate * 1000 * 1000 * 1000 / 8, opts.burst,
-        opts.max_heaps, opts.burst_rate_ratio);
-    std::unique_ptr<spead2::send::stream> stream;
-    auto &io_service = thread_pool.get_io_service();
-    boost::asio::ip::address interface_address;
-    if (!opts.bind.empty())
-        interface_address = boost::asio::ip::address::from_string(opts.bind);
+    sender s(opts);
 
-    if (opts.tcp) {
-        tcp::endpoint endpoint = get_endpoint<tcp>(io_service, opts);
-        auto promise = std::promise<void>();
-        auto connect_handler = [&promise] (const boost::system::error_code &e) {
-            if (e)
-                promise.set_exception(std::make_exception_ptr(boost::system::system_error(e)));
-            else
-                promise.set_value();
-        };
-        stream.reset(new spead2::send::tcp_stream(
-                    io_service, connect_handler, endpoint, config, opts.buffer, interface_address));
-        promise.get_future().get();
-    }
-    else
-    {
-        udp::endpoint endpoint = get_endpoint<udp>(io_service, opts);
-#if SPEAD2_USE_IBV
-        if (opts.ibv)
-        {
-            stream.reset(new spead2::send::udp_ibv_stream(
-                    io_service, endpoint, config,
-                    interface_address, opts.buffer, opts.ttl,
-                    opts.ibv_comp_vector, opts.ibv_max_poll));
-        }
-        else
-#endif
-        {
-            if (endpoint.address().is_multicast())
-            {
-                if (endpoint.address().is_v4())
-                    stream.reset(new spead2::send::udp_stream(
-                            io_service, endpoint, config, opts.buffer,
-                            opts.ttl, interface_address));
-                else
-                {
-                    if (!opts.bind.empty())
-                        std::cerr << "--bind is not yet supported for IPv6 multicast, ignoring\n";
-                    stream.reset(new spead2::send::udp_stream(
-                            io_service, endpoint, config, opts.buffer,
-                            opts.ttl));
-                }
-            }
-            else
-            {
-                stream.reset(new spead2::send::udp_stream(
-                        io_service, endpoint, config, opts.buffer, interface_address));
-            }
-        }
-    }
-    return run(*stream, opts);
+    spead2::thread_pool thread_pool(1);
+    std::unique_ptr<spead2::send::stream> stream =
+        opts.sender.make_stream(thread_pool.get_io_service(), opts.protocol,
+                                opts.dest, s.memory_regions());
+    return run(*stream, s);
 }

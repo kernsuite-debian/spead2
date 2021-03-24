@@ -1,4 +1,4 @@
-/* Copyright 2019 SKA South Africa
+/* Copyright 2019-2020 National Research Foundation (SARAO)
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -64,13 +64,13 @@ BOOST_AUTO_TEST_CASE(test_reverse)
     // Set up receiver
     thread_pool tp;
     std::shared_ptr<inproc_queue> queue = std::make_shared<inproc_queue>();
-    spead2::recv::ring_stream<> recv_stream(tp);
-    recv_stream.set_allow_unsized_heaps(false);
-    recv_stream.set_memcpy(reverse_memcpy);
+    spead2::recv::ring_stream<> recv_stream(
+        tp,
+        spead2::recv::stream_config().set_allow_unsized_heaps(false).set_memcpy(reverse_memcpy));
     recv_stream.emplace_reader<spead2::recv::inproc_reader>(queue);
 
     // Set up sender and send the heap
-    spead2::send::inproc_stream send_stream(tp, queue);
+    spead2::send::inproc_stream send_stream(tp, {queue});
     flavour f(4, 64, 48);
     spead2::send::heap send_heap(f);
     spead2::send::heap stop_heap(f);

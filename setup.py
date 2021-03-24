@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright 2015, 2017, 2019 SKA South Africa
+# Copyright 2015, 2017, 2019-2020 National Research Foundation (SARAO)
 #
 # This program is free software: you can redistribute it and/or modify it under
 # the terms of the GNU Lesser General Public License as published by the Free
@@ -15,20 +15,23 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from __future__ import print_function
-from setuptools import setup, find_packages, Extension
-from setuptools.command.build_ext import build_ext
+import configparser
 import glob
 import os
 import os.path
 import subprocess
+
+from setuptools import setup, find_packages, Extension
+from setuptools.command.build_ext import build_ext
+
+import pybind11
 
 
 def find_version():
     # Cannot simply import it, since that tries to import spead2 as well, which
     # isn't built yet.
     globals_ = {}
-    with open(os.path.join(os.path.dirname(__file__), 'spead2', '_version.py')) as f:
+    with open(os.path.join(os.path.dirname(__file__), 'src', 'spead2', '_version.py')) as f:
         code = f.read()
     exec(code, globals_)
     return globals_['__version__']
@@ -55,15 +58,11 @@ class BuildExt(build_ext):
     def run(self):
         self.mkpath(self.build_temp)
         subprocess.check_call(os.path.abspath('configure'), cwd=self.build_temp)
-        # Ugly hack to add libraries conditional on configure result
-        have_pcap = False
-        with open(os.path.join(self.build_temp, 'include', 'spead2', 'common_features.h')) as f:
-            for line in f:
-                if line.strip() == '#define SPEAD2_USE_PCAP 1':
-                    have_pcap = True
+        config = configparser.ConfigParser()
+        config.read(os.path.join(self.build_temp, 'python-build.cfg'))
         for extension in self.extensions:
-            if have_pcap:
-                extension.libraries.extend(['pcap'])
+            extension.extra_compile_args.extend(config['compiler']['CFLAGS'].split())
+            extension.extra_link_args.extend(config['compiler']['LIBS'].split())
             if self.coverage:
                 extension.extra_compile_args.extend(['-g', '--coverage'])
                 extension.libraries.extend(['gcov'])
@@ -121,28 +120,18 @@ if not rtd:
         raise SystemExit("configure not found. Either download a release " +
                          "from https://pypi.python.org/pypi/spead2 or run " +
                          "./bootstrap.sh if not using a release.")
-    if not os.path.exists(os.path.join(
-            os.path.dirname(__file__),
-            '3rdparty', 'pybind11', 'include', 'pybind11', 'pybind11.h')):
-        raise SystemExit("pybind11 not found. Either download a release " +
-                         "from https://pypi.python.org/pypi/spead2 or run " +
-                         "git submodule update --init --recursive if not " +
-                         "using a release.")
-
-    libraries = ['boost_system']
 
     extensions = [
         Extension(
             '_spead2',
-            sources=(glob.glob('src/common_*.cpp') +
+            sources=(glob.glob('src/py_*.cpp') +
+                     glob.glob('src/common_*.cpp') +
                      glob.glob('src/recv_*.cpp') +
-                     glob.glob('src/send_*.cpp') +
-                     glob.glob('src/py_*.cpp')),
+                     glob.glob('src/send_*.cpp')),
             depends=glob.glob('include/spead2/*.h'),
             language='c++',
-            include_dirs=['include', '3rdparty/pybind11/include'],
-            extra_compile_args=['-std=c++11', '-g0', '-fvisibility=hidden'],
-            libraries=libraries)
+            include_dirs=['include', pybind11.get_include()],
+            extra_compile_args=['-std=c++11', '-g0', '-fvisibility=hidden'])
     ]
 else:
     extensions = []
@@ -176,12 +165,13 @@ setup(
     ],
     tests_require=[
         'netifaces',
-        'nose',
-        'asynctest'
+        'pytest',
+        'pytest-asyncio',
+        'pytest-timeout'
     ],
-    python_requires='>=3.5',
-    test_suite='nose.collector',
-    packages=find_packages(),
+    python_requires='>=3.6',
+    packages=find_packages('src'),
+    package_dir={'': 'src'},
     package_data={'': ['py.typed', '*.pyi']},
     entry_points={
         'console_scripts': [

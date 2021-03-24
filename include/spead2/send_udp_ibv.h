@@ -1,4 +1,4 @@
-/* Copyright 2016, 2019 SKA South Africa
+/* Copyright 2016, 2019-2020 National Research Foundation (SARAO)
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -28,113 +28,109 @@
 #if SPEAD2_USE_IBV
 
 #include <boost/asio.hpp>
-#include <utility>
 #include <vector>
-#include <memory>
-#include <boost/noncopyable.hpp>
-#include <spead2/send_packet.h>
+#include <utility>
+#include <initializer_list>
 #include <spead2/send_stream.h>
+#include <spead2/common_thread_pool.h>
 #include <spead2/common_ibv.h>
-#include <spead2/common_memory_allocator.h>
-#include <spead2/common_raw_packet.h>
 
 namespace spead2
 {
+
+// Prevent the compiler instantiating the template in all translation units
+// (we'll explicitly instantiate it in send_udp_ibv.cpp).
+namespace send { class udp_ibv_config; }
+extern template class detail::udp_ibv_config_base<send::udp_ibv_config>;
+
 namespace send
 {
 
 /**
- * Stream using Infiniband versions for acceleration. Only IPv4 multicast
- * with an explicit source address are supported.
+ * Configuration for @ref udp_ibv_stream.
  */
-class udp_ibv_stream : public stream_impl<udp_ibv_stream>
+class udp_ibv_config : public spead2::detail::udp_ibv_config_base<udp_ibv_config>
 {
-private:
-    friend class stream_impl<udp_ibv_stream>;
-
-    struct slot : public boost::noncopyable
-    {
-        ibv_send_wr wr{};
-        ibv_sge sge{};
-        ethernet_frame frame;
-    };
-
-    const std::size_t n_slots;
-    boost::asio::ip::udp::socket socket; // used only to assign a source UDP port
-    boost::asio::ip::udp::endpoint endpoint;
-    boost::asio::ip::udp::endpoint source;
-    memory_allocator::pointer buffer;
-    rdma_event_channel_t event_channel;
-    rdma_cm_id_t cm_id;
-    ibv_pd_t pd;
-    ibv_comp_channel_t comp_channel;
-    boost::asio::posix::stream_descriptor comp_channel_wrapper;
-    ibv_cq_t send_cq, recv_cq;
-    ibv_qp_t qp;
-    ibv_mr_t mr;
-    std::unique_ptr<slot[]> slots;
-    std::vector<slot *> available;
-    const int max_poll;
-
-    static ibv_qp_t
-    create_qp(const ibv_pd_t &pd, const ibv_cq_t &send_cq, const ibv_cq_t &recv_cq,
-              std::size_t n_slots);
-
-    /// Clear out the completion queue and return slots to available
-    void reap();
-
-    /**
-     * Try to reap completion events until there is enough space to send all
-     * current packets. Returns true if successful, otherwise returns false
-     * and schedules @ref async_send_packets to be called again later.
-     */
-    bool make_space();
-
-    void async_send_packets();
-
 public:
-    /// Default send buffer size, if none is passed to the constructor
+    typedef std::pair<const void *, std::size_t> memory_region;
+
+    /// Default send buffer size
     static constexpr std::size_t default_buffer_size = 512 * 1024;
-    /// Number of times to poll in a row, if none is explicitly passed to the constructor
+    /// Default number of times to poll in a row
     static constexpr int default_max_poll = 10;
 
+private:
+    friend class spead2::detail::udp_ibv_config_base<udp_ibv_config>;
+    static void validate_endpoint(const boost::asio::ip::udp::endpoint &endpoint);
+    static void validate_memory_region(const udp_ibv_config::memory_region &region);
+
+    std::uint8_t ttl = 1;
+    std::vector<memory_region> memory_regions;
+
+public:
+    /// Get the IP TTL
+    std::uint8_t get_ttl() const { return ttl; }
+    /// Set the IP TTL
+    udp_ibv_config &set_ttl(std::uint8_t ttl);
+
+    /// Get currently registered memory regions
+    const std::vector<memory_region> &get_memory_regions() const { return memory_regions; }
     /**
-     * Constructor.
+     * Register a set of memory regions (replacing any previous). Items stored
+     * inside such pre-registered memory regions can (in most cases) be
+     * transmitted without making a copy. A memory region is defined by a
+     * start pointer and a size in bytes.
      *
-     * @param io_service   I/O service for sending data
-     * @param endpoint     Multicast group and port
-     * @param config       Stream configuration
-     * @param interface_address   Address of the outgoing interface
-     * @param buffer_size  Socket buffer size (0 for OS default)
-     * @param ttl          Maximum number of hops
-     * @param comp_vector  Completion channel vector (interrupt) for asynchronous operation, or
-     *                     a negative value to poll continuously. Polling
-     *                     should not be used if there are other users of the
-     *                     thread pool. If a non-negative value is provided, it
-     *                     is taken modulo the number of available completion
-     *                     vectors. This allows a number of readers to be
-     *                     assigned sequential completion vectors and have them
-     *                     load-balanced, without concern for the number
-     *                     available.
-     * @param max_poll     Maximum number of times to poll in a row, without
-     *                     waiting for an interrupt (if @a comp_vector is
-     *                     non-negative) or letting other code run on the
-     *                     thread (if @a comp_vector is negative).
+     * Memory regions must not overlap; this is only validating when constructing
+     * the stream.
+     */
+    udp_ibv_config &set_memory_regions(const std::vector<memory_region> &memory_regions);
+    /// Append a memory region (see @ref set_memory_regions)
+    udp_ibv_config &add_memory_region(const void *ptr, std::size_t size);
+};
+
+class udp_ibv_stream : public stream
+{
+public:
+    SPEAD2_DEPRECATED("use spead2::send::udp_ibv_config::default_buffer_size")
+    static constexpr std::size_t default_buffer_size = udp_ibv_config::default_buffer_size;
+    SPEAD2_DEPRECATED("use spead2::send::udp_ibv_config::default_max_poll")
+    static constexpr int default_max_poll = udp_ibv_config::default_max_poll;
+
+    /**
+     * Backwards-compatibility constructor (taking only a single endpoint).
+     *
+     * Refer to @ref udp_ibv_config for an explanation of the arguments.
      *
      * @throws std::invalid_argument if @a endpoint is not an IPv4 multicast address
      * @throws std::invalid_argument if @a interface_address is not an IPv4 address
      */
+    SPEAD2_DEPRECATED("use udp_ibv_config")
     udp_ibv_stream(
         io_service_ref io_service,
         const boost::asio::ip::udp::endpoint &endpoint,
         const stream_config &config,
         const boost::asio::ip::address &interface_address,
-        std::size_t buffer_size = default_buffer_size,
+        std::size_t buffer_size = udp_ibv_config::default_buffer_size,
         int ttl = 1,
         int comp_vector = 0,
-        int max_poll = default_max_poll);
+        int max_poll = udp_ibv_config::default_max_poll);
 
-    virtual ~udp_ibv_stream();
+    /**
+     * Constructor.
+     *
+     * @param io_service   I/O service for sending data
+     * @param config       Common stream configuration
+     * @param ibv_config   Class-specific stream configuration
+     *
+     * @throws std::invalid_argument if @a ibv_config does not have an interface address set.
+     * @throws std::invalid_argument if @a ibv_config does not have any endpoints set.
+     * @throws std::invalid_argument if memory regions overlap.
+     */
+    udp_ibv_stream(
+        io_service_ref io_service,
+        const stream_config &config,
+        const udp_ibv_config &ibv_config);
 };
 
 } // namespace send

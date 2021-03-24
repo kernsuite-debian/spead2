@@ -1,4 +1,4 @@
-/* Copyright 2015, 2017, 2019 SKA South Africa
+/* Copyright 2015, 2017, 2019-2020 National Research Foundation (SARAO)
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -18,232 +18,139 @@
  * @file
  */
 
+#include <algorithm>
+#include <limits>
 #include <cmath>
+#include <thread>
 #include <stdexcept>
+#include <spead2/common_logging.h>
 #include <spead2/send_stream.h>
+#include <spead2/send_writer.h>
 
 namespace spead2
 {
 namespace send
 {
 
-constexpr std::size_t stream_config::default_max_packet_size;
-constexpr std::size_t stream_config::default_max_heaps;
-constexpr std::size_t stream_config::default_burst_size;
-constexpr double stream_config::default_burst_rate_ratio;
-
-void stream_config::set_max_packet_size(std::size_t max_packet_size)
+detail::queue_item *stream::get_queue(std::size_t idx)
 {
-    // TODO: validate here instead rather than waiting until packet_generator
-    this->max_packet_size = max_packet_size;
+    return reinterpret_cast<detail::queue_item *>(queue.get() + (idx & queue_mask));
 }
 
-void stream_config::set_rate(double rate)
+static std::size_t compute_queue_mask(std::size_t size)
 {
-    if (rate < 0.0 || !std::isfinite(rate))
-        throw std::invalid_argument("rate must be non-negative");
-    this->rate = rate;
+    if (size == 0)
+        throw std::invalid_argument("max_heaps must be at least 1");
+    if (size > std::numeric_limits<std::size_t>::max() / 2 + 1)
+        throw std::invalid_argument("max_heaps is too large");
+    std::size_t p2 = 1;
+    while (p2 < size)
+        p2 <<= 1;
+    return p2 - 1;
 }
 
-void stream_config::set_max_heaps(std::size_t max_heaps)
+stream::unwinder::unwinder(stream &s, std::size_t tail)
+    : s(s), orig_tail(tail), tail(tail)
 {
-    if (max_heaps == 0)
-        throw std::invalid_argument("max_heaps must be positive");
-    this->max_heaps = max_heaps;
 }
 
-void stream_config::set_burst_size(std::size_t burst_size)
+void stream::unwinder::set_tail(std::size_t tail)
 {
-    this->burst_size = burst_size;
+    this->tail = tail;
 }
 
-void stream_config::set_burst_rate_ratio(double burst_rate_ratio)
+void stream::unwinder::abort()
 {
-    if (burst_rate_ratio < 1.0 || !std::isfinite(burst_rate_ratio))
-        throw std::invalid_argument("burst rate ratio must be at least 1.0 and finite");
-    this->burst_rate_ratio = burst_rate_ratio;
+    for (std::size_t i = orig_tail; i != tail; i++)
+        s.get_queue(i)->~queue_item();
 }
 
-double stream_config::get_burst_rate() const
+void stream::unwinder::commit()
 {
-    return rate * burst_rate_ratio;
+    orig_tail = tail;
 }
 
-stream_config::stream_config(
-    std::size_t max_packet_size,
-    double rate,
-    std::size_t burst_size,
-    std::size_t max_heaps,
-    double burst_rate_ratio)
+stream::stream(std::unique_ptr<writer> &&w)
+    : queue_size(w->config.get_max_heaps()),
+    queue_mask(compute_queue_mask(queue_size)),
+    num_substreams(w->get_num_substreams()),
+    max_packet_size(w->config.get_max_packet_size()),
+    w(std::move(w)),
+    queue(new queue_item_storage[queue_mask + 1])
 {
-    set_max_packet_size(max_packet_size);
-    set_rate(rate);
-    set_burst_size(burst_size);
-    set_max_heaps(max_heaps);
-    set_burst_rate_ratio(burst_rate_ratio);
-}
-
-
-stream::stream(io_service_ref io_service)
-    : io_service(std::move(io_service))
-{
+    this->w->set_owner(this);
+    this->w->start();
 }
 
 stream::~stream()
 {
-}
-
-
-std::size_t stream_impl_base::next_queue_slot(std::size_t cur) const
-{
-    if (++cur == config.get_max_heaps() + 1)
-        cur = 0;
-    return cur;
-}
-
-stream_impl_base::queue_item *stream_impl_base::get_queue(std::size_t idx)
-{
-    return reinterpret_cast<queue_item *>(queue.get() + idx);
-}
-
-void stream_impl_base::next_active()
-{
-    active = next_queue_slot(active);
-    gen = boost::none;
-}
-
-void stream_impl_base::post_handler(boost::system::error_code result)
-{
-    queue_item &front = *get_queue(queue_head);
-    get_io_service().post(
-        std::bind(std::move(front.handler), result, front.bytes_sent));
-    if (active == queue_head)
-    {
-        // Can only happen if there is an error with the head of the queue
-        // before we've transmitted all its packets.
-        assert(result);
-        next_active();
-    }
-    front.~queue_item();
-    queue_head = next_queue_slot(queue_head);
-}
-
-bool stream_impl_base::must_sleep() const
-{
-    return rate_bytes >= config.get_burst_size();
-}
-
-void stream_impl_base::process_results()
-{
-    for (std::size_t i = 0; i < n_current_packets; i++)
-    {
-        const transmit_packet &item = current_packets[i];
-        if (item.item != get_queue(queue_head))
-        {
-            // A previous packet in this heap already aborted it
-            continue;
-        }
-        if (item.result)
-            post_handler(item.result);
-        else
-        {
-            item.item->bytes_sent += item.size;
-            if (item.last)
-                post_handler(item.result);
-        }
-    }
-    n_current_packets = 0;
-}
-
-stream_impl_base::timer_type::time_point stream_impl_base::update_send_times(
-    timer_type::time_point now)
-{
-    std::chrono::duration<double> wait_burst(rate_bytes * seconds_per_byte_burst);
-    std::chrono::duration<double> wait(rate_bytes * seconds_per_byte);
-    send_time_burst += std::chrono::duration_cast<timer_type::clock_type::duration>(wait_burst);
-    send_time += std::chrono::duration_cast<timer_type::clock_type::duration>(wait);
-    rate_bytes = 0;
-
-    /* send_time_burst needs to reflect the time the burst
-     * was actually sent (as well as we can estimate it), even if
-     * send_time or now is later.
+    flush();
+    /* The writer might still have a pending wakeup to check for new work.
+     * Before we can safely delete it, we need it to have set need_wakeup.
+     * A spin loop is not normally great style, but we take a hit on shutdown
+     * to keep worker::request_wakeup fast when we're not shutting down.
      */
-    timer_type::time_point target_time = std::max(send_time_burst, send_time);
-    send_time_burst = std::max(now, target_time);
-    return target_time;
-}
-
-void stream_impl_base::update_send_time_empty()
-{
-    timer_type::time_point now = timer_type::clock_type::now();
-    // Compute what send_time would need to be to make the next packet due to be
-    // transmitted now.
-    std::chrono::duration<double> wait(rate_bytes * seconds_per_byte);
-    auto wait2 = std::chrono::duration_cast<timer_type::clock_type::duration>(wait);
-    timer_type::time_point backdate = now - wait2;
-    send_time = std::max(send_time, backdate);
-}
-
-void stream_impl_base::load_packets(std::size_t tail)
-{
-    n_current_packets = 0;
-    while (n_current_packets < max_current_packets && !must_sleep() && active != tail)
+    std::unique_lock<std::mutex> lock(tail_mutex);
+    while (!need_wakeup)
     {
-        queue_item *cur = get_queue(active);
-        if (!gen)
-            gen = boost::in_place(cur->h, cur->cnt, config.get_max_packet_size());
-        assert(gen->has_next_packet());
-        transmit_packet &data = current_packets[n_current_packets];
-        data.pkt = gen->next_packet();
-        data.size = boost::asio::buffer_size(data.pkt.buffers);
-        data.last = !gen->has_next_packet();
-        data.item = cur;
-        data.result = boost::system::error_code();
-        rate_bytes += data.size;
-        n_current_packets++;
-        if (data.last)
-            next_active();
+        lock.unlock();
+        std::this_thread::yield();
+        lock.lock();
     }
 }
 
-stream_impl_base::stream_impl_base(
-    io_service_ref io_service,
-    const stream_config &config,
-    std::size_t max_current_packets) :
-        stream(std::move(io_service)),
-        current_packets(new transmit_packet[max_current_packets]),
-        max_current_packets(max_current_packets),
-        config(config),
-        seconds_per_byte_burst(config.get_burst_rate() > 0.0 ? 1.0 / config.get_burst_rate() : 0.0),
-        seconds_per_byte(config.get_rate() > 0.0 ? 1.0 / config.get_rate() : 0.0),
-        queue(new queue_item_storage[config.get_max_heaps() + 1]),
-        timer(get_io_service())
+boost::asio::io_service &stream::get_io_service() const
 {
+    return w->get_io_service();
 }
 
-stream_impl_base::~stream_impl_base()
-{
-    for (std::size_t i = queue_head; i != queue_tail; i = next_queue_slot(i))
-        get_queue(i)->~queue_item();
-}
-
-void stream_impl_base::set_cnt_sequence(item_pointer_t next, item_pointer_t step)
+void stream::set_cnt_sequence(item_pointer_t next, item_pointer_t step)
 {
     if (step == 0)
         throw std::invalid_argument("step cannot be 0");
-    std::unique_lock<std::mutex> lock(queue_mutex);
+    std::unique_lock<std::mutex> lock(tail_mutex);
     next_cnt = next;
     step_cnt = step;
 }
 
-void stream_impl_base::flush()
+bool stream::async_send_heap(const heap &h, completion_handler handler,
+                             s_item_pointer_t cnt,
+                             std::size_t substream_index)
 {
-    std::unique_lock<std::mutex> lock(queue_mutex);
-    while (state != state_t::EMPTY)
-    {
-        heap_empty.wait(lock);
-    }
+    heap_reference ref(h, cnt, substream_index);
+    return async_send_heaps_impl<null_unwinder>(
+        &ref, &ref + 1, std::move(handler), group_mode::ROUND_ROBIN);
 }
+
+void stream::flush()
+{
+    std::future<void> future;
+    {
+        std::lock_guard<std::mutex> tail_lock(tail_mutex);
+        std::lock_guard<std::mutex> head_lock(head_mutex);
+        // These could probably be read with relaxed consistency because the locks
+        // ensure ordering, but this is not performance-critical.
+        std::size_t tail = queue_tail.load();
+        std::size_t head = queue_head.load();
+        if (head == tail)
+            return;
+        detail::queue_item *item = get_queue(tail - 1);
+        item->waiters.emplace_front();
+        future = item->waiters.front().get_future();
+    }
+
+    future.wait();
+}
+
+std::size_t stream::get_num_substreams() const
+{
+    return num_substreams;
+}
+
+// Explicit instantiation
+template bool stream::async_send_heaps_impl<stream::null_unwinder, heap_reference *>(
+    heap_reference *first, heap_reference *last,
+    completion_handler &&handler, group_mode mode);
 
 } // namespace send
 } // namespace spead2

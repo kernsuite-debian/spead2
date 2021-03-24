@@ -10,7 +10,7 @@ each, rather than a generic `Stream` class. Because there is common
 configuration between the stream classes, configuration is encapsulated in a
 :py:class:`spead2.send.StreamConfig`.
 
-.. py:class:: spead2.send.StreamConfig(max_packet_size=1472, rate=0.0, burst_size=65536, max_heaps=4, burst_rate_ratio=1.05)
+.. py:class:: spead2.send.StreamConfig(*, max_packet_size=1472, rate=0.0, burst_size=65536, max_heaps=4, burst_rate_ratio=1.05)
 
    :param int max_packet_size: Heaps will be split into packets of at most this size.
    :param double rate: Target transmission rate, in bytes per second, or 0
@@ -25,8 +25,39 @@ configuration between the stream classes, configuration is encapsulated in a
      transmission rate, the rate will be increased until the average rate
      has caught up. This value specifies the "catch-up" rate, as a ratio to the
      target rate.
+   :param RateMethod rate_method: Select method for applying the rate limit.
+     If true, then hardware-based rate
+     limiting may be used if available. In this case it is
+     implementation-defined whether `burst_rate_ratio` and `burst_size` have
+     any effect. This will often produce results that are at least as good as
+     the software limiter, but in some cases (particularly higher data rates)
+     the overall rate becomes less accurate and so it is disabled by default.
 
    The constructor arguments are also instance attributes.
+
+.. py:class:: spead2.send.RateMethod
+
+   An enumeration to select a method for rate limiting.
+
+   .. attribute:: SW
+
+      Use a generic software rate limiter.
+
+   .. attribute:: HW
+
+      Use a hardware rate limiter, if available. This is currently only
+      supported when using :doc:`ibverbs <py-ibverbs>`, and only if the
+      hardware supports it. If hardware rate limiting is not available,
+      falls back to software.
+
+   .. attribute:: AUTO
+
+      This is the default, and lets the implementation decide whether to use
+      hardware rate limiting. At present it will never use the hardware rate
+      limiter (because the available hardware limiters don't do a good job
+      under all conditions), but in future it is likely to use the hardware
+      limiter more often in circumstances where it has been tested to perform
+      well.
 
 Streams send pre-baked heaps, which can be constructed by hand, but are more
 normally created from an :py:class:`~spead2.ItemGroup` by a
@@ -74,6 +105,20 @@ is paired with one heap generator, a convenience class
 
       Convenience method to add an end-of-stream item.
 
+.. _py-substreams:
+
+Substreams
+----------
+For some transport types it is possible to create a stream with multiple
+"substreams". Each substream typically has a separate destination address, but
+all the heaps within the stream are sent in order and the stream configuration
+(including the rate limits) apply to the stream as a whole. Using substreams
+rather than independent streams gives better control over the overall
+transmission rate, and uses fewer system resources.
+
+When sending a heap, an optional parameter called `substream_index` selects
+the substream that will be used.
+
 Blocking send
 -------------
 
@@ -83,7 +128,7 @@ implement the following interface, although this base class does not actually ex
 
 .. py:class:: spead2.send.AbstractStream()
 
-   .. py:method:: send_heap(heap, cnt=-1)
+   .. py:method:: send_heap(heap, cnt=-1, substream_index=0)
 
       Sends a :py:class:`spead2.send.Heap` to the peer, and wait for
       completion. There is currently no indication of whether it successfully
@@ -93,6 +138,26 @@ implement the following interface, although this base class does not actually ex
       modified by calling :py:meth:`set_cnt_sequence`). If a non-negative value
       is specified for `cnt`, it is used instead. It is the user's
       responsibility to avoid collisions.
+
+      See :ref:`py-substreams` for a description of `substream_index`.
+
+   .. py:method:: send_heaps(heaps, mode)
+
+      Sends a group of heaps. This is primarily intended to be combined with
+      :ref:`py-substreams`, where one wishes to send a heap on each
+      substream, with their packets interleaved on the network (rather than
+      all the packets for one heap, then all the packets for the next etc).
+
+      This function will either enqueue all of the heaps, or none of them. In
+      particular, there must be space in the queue for all of them.
+
+      It is an error for `heaps` to be empty. Currently this raises
+      :py:exc:`OSError`, but it may be replaced by :py:exc:`ValueError` in
+      future.
+
+      :param heaps: A list of heaps to send
+      :type heaps: List[spead2.send.HeapReference]
+      :param spead2.send.GroupMode mode: Controls the packet ordering
 
    .. py:method:: set_cnt_sequence(next, step)
 
@@ -108,17 +173,43 @@ implement the following interface, although this base class does not actually ex
       If the computed cnt overflows the number of bits available, the
       bottom-most bits are taken.
 
+   .. py:attribute:: num_substreams
+
+      Number of substreams in this stream (read-only).
+
+.. py:class:: spead2.send.HeapReference(heap, *, cnt=-1, substream_index=0)
+
+   A thin wrapper around a :class:`~spead2.send.Heap`, heap cnt and substream
+   index, for passing to :py:meth:`~spead2.send.AbstractStream.send_heaps`. The
+   parameters have the same meaning as the corresponding arguments to
+   :py:meth:`~spead2.send.AbstractStream.send_heap`.
+
+.. py:class:: spead2.send.GroupMode
+
+   Enumeration selecting the packet ordering for a group of heaps sent with
+   :py:meth:`~spead2.send.AbstractStream.send_heaps`. At present there is only one
+   option, but there is the possibility of other options in future.
+
+   .. py:attribute:: ROUND_ROBIN
+
+    Interleave the packets of the heaps. One packet is sent from each heap
+    in turn (skipping those that have run out of packets).
+
 UDP
 ^^^
 
 Note that since UDP is an unreliable protocol, there is no guarantee that packets arrive.
 
-.. py:class:: spead2.send.UdpStream(thread_pool, hostname, port, config=spead2.send.StreamConfig(), buffer_size=DEFAULT_BUFFER_SIZE, interface_address='')
+For each constructor overload, the `endpoints` parameter can also be replaced
+by two parameters that contain the hostname/IP address and port for a single
+substream (for backwards compatibility).
+
+.. py:class:: spead2.send.UdpStream(thread_pool, endpoints, config=spead2.send.StreamConfig(), buffer_size=DEFAULT_BUFFER_SIZE, interface_address='')
 
    :param thread_pool: Thread pool handling the I/O
    :type thread_pool: :py:class:`spead2.ThreadPool`
-   :param str hostname: Peer hostname
-   :param int port: Peer port
+   :param endpoints: Peer endpoints (one per substream)
+   :type endpoints: List[Tuple[str, int]]
    :param config: Stream configuration
    :type config: :py:class:`spead2.send.StreamConfig`
    :param int buffer_size: Socket buffer size. A warning is logged if this
@@ -126,29 +217,31 @@ Note that since UDP is an unreliable protocol, there is no guarantee that packet
    :param str interface_address: Source hostname/IP address (see tips about
      :ref:`routing`).
 
-.. py:class:: spead2.send.UdpStream(thread_pool, multicast_group, port, config=spead2.send.StreamConfig(), buffer_size=DEFAULT_BUFFER_SIZE, ttl)
+.. py:class:: spead2.send.UdpStream(thread_pool, endpoints, config=spead2.send.StreamConfig(), buffer_size=DEFAULT_BUFFER_SIZE, ttl)
+   :noindex:
 
    Stream using UDP, with multicast TTL. Note that the regular constructor will
    also work with multicast, but does not give any control over the TTL.
 
    :param thread_pool: Thread pool handling the I/O
    :type thread_pool: :py:class:`spead2.ThreadPool`
-   :param str multicast_group: Multicast group hostname/IP address
-   :param int port: Destination port
+   :param endpoints: Peer endpoints (one per substream)
+   :type endpoints: List[Tuple[str, int]]
    :param config: Stream configuration
    :type config: :py:class:`spead2.send.StreamConfig`
    :param int buffer_size: Socket buffer size. A warning is logged if this
      size cannot be set due to OS limits.
    :param int ttl: Multicast TTL
 
-.. py:class:: spead2.send.UdpStream(thread_pool, multicast_group, port, config=spead2.send.StreamConfig(), buffer_size=524288, ttl, interface_address)
+.. py:class:: spead2.send.UdpStream(thread_pool, endpoints, config=spead2.send.StreamConfig(), buffer_size=524288, ttl, interface_address)
+   :noindex:
 
    Stream using UDP, with multicast TTL and interface address (IPv4 only).
 
    :param thread_pool: Thread pool handling the I/O
    :type thread_pool: :py:class:`spead2.ThreadPool`
-   :param str multicast_group: Multicast group hostname/IP address
-   :param int port: Destination port
+   :param endpoints: Peer endpoints (one per substream)
+   :type endpoints: List[Tuple[str, int]]
    :param config: Stream configuration
    :type config: :py:class:`spead2.send.StreamConfig`
    :param int buffer_size: Socket buffer size. A warning is logged if this
@@ -157,14 +250,15 @@ Note that since UDP is an unreliable protocol, there is no guarantee that packet
    :param str interface_address: Hostname/IP address of the interface on which
      to send the data
 
-.. py:class:: spead2.send.UdpStream(thread_pool, multicast_group, port, config=spead2.send.StreamConfig(), buffer_size=DEFAULT_BUFFER_SIZE, ttl, interface_index)
+.. py:class:: spead2.send.UdpStream(thread_pool, endpoints, config=spead2.send.StreamConfig(), buffer_size=DEFAULT_BUFFER_SIZE, ttl, interface_index)
+   :noindex:
 
    Stream using UDP, with multicast TTL and interface index (IPv6 only).
 
    :param thread_pool: Thread pool handling the I/O
    :type thread_pool: :py:class:`spead2.ThreadPool`
-   :param str multicast_group: Multicast group hostname/IP address
-   :param int port: Destination port
+   :param endpoints: Peer endpoints (one per substream)
+   :type endpoints: List[Tuple[str, int]]
    :param config: Stream configuration
    :type config: :py:class:`spead2.send.StreamConfig`
    :param int buffer_size: Socket buffer size. A warning is logged if this
@@ -173,7 +267,8 @@ Note that since UDP is an unreliable protocol, there is no guarantee that packet
    :param str interface_index: Index of the interface on which to send the
      data
 
-.. py:class:: spead2.send.UdpStream(thread_pool, socket, hostname, port, config=spead2.send.StreamConfig())
+.. py:class:: spead2.send.UdpStream(thread_pool, socket, endpoints, config=spead2.send.StreamConfig())
+   :noindex:
 
    Stream using UDP, with a pre-existing socket. The socket is duplicated by
    the stream, so the original can be closed immediately to free up a file
@@ -183,28 +278,22 @@ Note that since UDP is an unreliable protocol, there is no guarantee that packet
    :param thread_pool: Thread pool handling the I/O
    :type thread_pool: :py:class:`spead2.ThreadPool`
    :param socket.socket socket: UDP socket
-   :param str hostname: Peer hostname
-   :param int port: Peer port
+   :param endpoints: Peer endpoints (one per substream)
+   :type endpoints: List[Tuple[str, int]]
    :param config: Stream configuration
    :type config: :py:class:`spead2.send.StreamConfig`
 
-.. py:class:: spead2.send.UdpStream(thread_pool, hostname, port, config=spead2.send.StreamConfig(), buffer_size=DEFAULT_BUFFER_SIZE, socket)
+.. py:class:: spead2.send.UdpStream(thread_pool, endpoints, config=spead2.send.StreamConfig(), buffer_size=DEFAULT_BUFFER_SIZE, socket)
+   :noindex:
 
    :param thread_pool: Thread pool handling the I/O
    :type thread_pool: :py:class:`spead2.ThreadPool`
-   :param str hostname: Peer hostname
-   :param int port: Peer port
+   :param endpoints: Peer endpoints (one per substream)
+   :type endpoints: List[Tuple[str, int]]
    :param config: Stream configuration
    :type config: :py:class:`spead2.send.StreamConfig`
    :param int buffer_size: Socket buffer size. A warning is logged if this
      size cannot be set due to OS limits.
-   :param socket.socket socket: This socket is used rather
-     than a new one. The socket must not be connected. The caller must
-     not use this socket any further, although it is not necessary to keep
-     it alive. This is mainly useful for fine-tuning socket options.
-
-   .. deprecated:: 1.9
-      Use the overload that does not take `buffer_size`.
 
 TCP
 ^^^
@@ -214,15 +303,19 @@ multiple threads all call :py:meth:`~spead2.send.AbstractStream.send_heap` at
 the same time, they can exceed the configured `max_heaps` and heaps will be dropped.
 
 Because spead2 was originally designed for UDP, the default packet size in
-:py:class:`~.StreamConfig` is quite small. Performance can be improved by
+:py:class:`~spead2.send.StreamConfig` is quite small. Performance can be improved by
 increasing it (but be sure the receiver is configured to handle larger packets).
 
-.. py:class:: spead2.send.TcpStream(thread_pool, hostname, port, config=spead2.send.StreamConfig(), buffer_size=DEFAULT_BUFFER_SIZE, interface_address='')
+TCP/IP is also a connection-oriented protocol, and does not support substreams. The
+`endpoints` must therefore contain exactly one endpoint (it takes a list for
+consistency with :class:`~spead2.send.UdpStream`).
+
+.. py:class:: spead2.send.TcpStream(thread_pool, endpoints, config=spead2.send.StreamConfig(), buffer_size=DEFAULT_BUFFER_SIZE, interface_address='')
 
    :param thread_pool: Thread pool handling the I/O
    :type thread_pool: :py:class:`spead2.ThreadPool`
-   :param str hostname: Peer hostname
-   :param int port: Peer port
+   :param endpoints: Peer endpoint (must contain exactly one element).
+   :type endpoints: List[Tuple[str, int]]
    :param config: Stream configuration
    :type config: :py:class:`spead2.send.StreamConfig`
    :param int buffer_size: Socket buffer size. A warning is logged if this
@@ -231,6 +324,7 @@ increasing it (but be sure the receiver is configured to handle larger packets).
      :ref:`routing`).
 
 .. py:class:: spead2.send.TcpStream(thread_pool, socket, config=spead2.send.StreamConfig())
+   :noindex:
 
    Stream using an existing socket. The socket must already be connected to the
    peer, and the user is responsible for setting any desired socket options. The socket
@@ -286,7 +380,7 @@ following abstract interface (the class does not actually exist):
 
 .. class:: spead2.send.asyncio.AbstractStream()
 
-   .. py:method:: async_send_heap(heap, cnt=-1, loop=None)
+   .. py:method:: async_send_heap(heap, cnt=-1, substream_index=0)
 
       Send a heap asynchronously. Note that this is *not* a coroutine:
       it returns a future. Adding the heap to the queue is done
@@ -295,8 +389,19 @@ following abstract interface (the class does not actually exist):
       :param heap: Heap to send
       :type heap: :py:class:`spead2.send.Heap`
       :param int cnt: Heap cnt to send (defaults to auto-incrementing)
-      :param loop: Event loop to use, overriding the constructor
-      :type loop: :py:class:`asyncio.AbstractEventLoop`
+
+   .. py:method:: async_send_heaps(heaps, mode)
+
+      Send a group of heaps asynchronously. Note that this is *not* a
+      coroutine: it returns a future. Adding the heaps to the queue is done
+      synchronously, to ensure proper ordering.
+
+      The parameters have the same meaning as for
+      :py:meth:`~spead2.send.AbstractStream.send_heaps`.
+
+      :param heaps: A list of heaps to send
+      :type heaps: List[spead2.send.HeapReference]
+      :param spead2.send.GroupMode mode: Controls the packet ordering
 
    .. py:method:: flush
 

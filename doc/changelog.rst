@@ -1,6 +1,188 @@
 Changelog
 =========
 
+.. rubric:: 3.2.1
+
+- Update type annotations to use :class:`numpy.typing.DTypeLike` for dtype
+  arguments, to prevent false warnings from mypy.
+
+.. rubric:: 3.2.0
+
+- Add :cpp:func:`spead2::recv::heap::get_payload` to allow the payload
+  pointer to be retrieved from a complete heap.
+- Make the ibverbs sender compatible with `PeerDirect`_.
+- Add examples programs showing integration with `gdrcopy`_ and
+  `PeerDirect`_.
+- Always use SFENCE at end of :cpp:func:`memcpy_nontemporal` so that it is
+  appropriate for use with `gdrcopy`_.
+- Fix a memory leak when receiving with ibverbs.
+
+.. _gdrcopy: https://github.com/NVIDIA/gdrcopy
+.. _PeerDirect: https://docs.mellanox.com/pages/viewpage.action?pageId=32413288
+
+.. rubric:: 3.1.3
+
+- Fix installation of header files: some newer headers were not being
+  installed, breaking builds for C++ projects.
+
+.. rubric:: 3.1.2
+
+- Fix a use-after-free bug that could cause a crash when freeing a send
+  stream.
+- Improve send performance by eliminating a memory allocation from packet
+  generation.
+
+.. rubric:: 3.1.1
+
+- Set ``IBV_ACCESS_RELAXED_ORDERING`` flag on ibverbs memory regions. This
+  reduces packet loss in some circumstances (observed on Epyc 2 system with
+  lots of memory traffic).
+
+.. rubric:: 3.1.0
+
+- Add :py:meth:`~spead2.send.AbstractStream.send_heaps` and
+  :py:meth:`~spead2.send.asyncio.AbstractStream.async_send_heaps` to send
+  groups of heaps with interleaved packets.
+- Upgrade to pybind11 2.6.0, which contains a workaround for a bug in CPython
+  3.9.0.
+
+.. rubric:: 3.0.1
+
+- Bring the type stubs up to date.
+- Fix a typo in the documentation.
+
+.. rubric:: 3.0.0
+
+Version 3.0 contains a number of breaking API changes. For information on
+updating your existing code, refer to :doc:`migrate-3`.
+
+The :doc:`ibverbs <py-ibverbs>` acceleration has been substantially modified to use a
+newer version of rdma-core. It will no longer compile against versions of
+MLNX-OFED prior to 5.0. Compiled code (such as Python wheels) will still run
+against old versions of MLNX-OFED, but extension features such as multi-packet
+receive queues and packet timestamps will not work, and nor will
+:program:`mcdump`. It is recommended that if you are using ibverbs acceleration
+with older MLNX-OFED drivers that you stick with spead2 2.x until you're able
+to upgrade the drivers and spead2 simultaneously.
+
+- Support multiple "substreams" in a send stream (see :ref:`py-substreams`).
+- Reduce overhead for dealing with incomplete heaps.
+- Allow ibverbs senders to register memory regions for zero-copy
+  transmission.
+- Add C++ preprocessor defines for the version number.
+- Use IP/UDP checksum offloading for sending with ibverbs (improves
+  performance and also adds UDP checksum which is otherwise omitted).
+- Add wheels for Python 3.9.
+- Drop support for Python 3.5, which is end-of-life.
+- Change code examples to use standard SPEAD rather than PySPEAD bug
+  compatibility.
+- Change :cpp:class:`spead2::send::streambuf_stream` so that when the
+  streambuf only partially writes a packet, the partial byte count is
+  included in the count returned to the callback.
+- :cpp:func:`spead2::send::stream::flush` now only blocks until the
+  previously enqueued heaps are completed. Another thread that keeps adding
+  heaps would previously have prevented it from returning.
+- Partially rewrite the sending infrastructure, resulting in performance
+  improvements, in some cases of over 10%.
+- Setting a buffer size of 0 for a :py:class:`~spead2.send.UdpIbvStream` now
+  uses the default buffer size, instead of a 1-packet buffer.
+- Fix :program:`spead2_bench.py` ignoring the :option:`!--send-affinity` option.
+- Add :option:`!--verify` option to :program:`spead2_send` and
+  :program:`spead2_recv` to aid in testing the code. To support this,
+  :program:`spead2_send` was modified so that each in-flight heap uses
+  different memory, which may reduce performance (due to less cache re-use)
+  even when the option is not given.
+- Miscellaneous performance improvements.
+- Support hardware send rate limiting when using ibverbs (disabled by default).
+- Discover libibverbs and pcap using pkg-config where possible.
+- Make :program:`configure` print out the configuration that will be compiled.
+- Update the Python wheels to use manylinux2014. This uses a newer compiler
+  (potentially giving better performance) and supports :c:func:`sendmmsg`.
+- A number of deprecated functions have been removed.
+- Avoid ibverbs code creating a send queue for receiver or vice versa.
+- Rename ``slave`` option to :program:`spead2_bench` to ``agent``.
+
+Compared to 3.0.0b2 there is a critical bug fix for a race condition in the
+send code.
+
+.. rubric:: 3.0.0b2
+
+Version 3.0 contains a number of breaking API changes. For information on
+updating your existing code, refer to :doc:`migrate-3`.
+
+Other changes:
+
+- Support multiple "substreams" in a send stream (see :ref:`py-substreams`).
+- Reduce overhead for dealing with incomplete heaps.
+- Allow ibverbs senders to register memory regions for zero-copy
+  transmission.
+- Add C++ preprocessor defines for the version number.
+- Use IP/UDP checksum offloading for sending with ibverbs (improves
+  performance and also adds UDP checksum which is otherwise omitted).
+- Drop support for Python 3.5, which is end-of-life.
+- Change code examples to use standard SPEAD rather than PySPEAD bug
+  compatibility.
+- Change :cpp:class:`spead2::send::streambuf_stream` so that when the
+  streambuf only partially writes a packet, the partial byte count is
+  included in the count returned to the callback.
+- :cpp:func:`spead2::send::stream::flush` now only blocks until the
+  previously enqueued heaps are completed. Another thread that keeps adding
+  heaps would previously have prevented it from returning.
+- Partially rewrite the sending infrastructure, resulting in performance
+  improvements, in some cases of over 10%.
+- Setting a buffer size of 0 for a :py:class:`~spead2.send.UdpIbvStream` now
+  uses the default buffer size, instead of a 1-packet buffer.
+- Fix :program:`spead2_bench.py` ignoring the :option:`!--send-affinity` option.
+- The hardware rate limiting introduced in 3.0.0b1 is now disabled by default,
+  as it proved to be significantly less accurate than the software rate limiter
+  in some cases. The interface has also been changed from a boolean to an enum
+  (with the default being ``AUTO``) so that it can later be re-enabled under
+  circumstances where it is known to work well, while still allowing it to be
+  explicitly enabled or disabled.
+- Add :option:`!--verify` option to :program:`spead2_send` and
+  :program:`spead2_recv` to aid in testing the code. To support this,
+  :program:`spead2_send` was modified so that each in-flight heap uses
+  different memory, which may reduce performance (due to less cache re-use)
+  even when the option is not given.
+- Miscellaneous performance improvements.
+
+Additionally, refer to the changes for 3.0.0b1 below.
+
+.. rubric:: 3.0.0b1
+
+The :doc:`ibverbs <py-ibverbs>` acceleration has been substantially modified to use a
+newer version of rdma-core. It will no longer compile against versions of
+MLNX-OFED prior to 5.0. Compiled code (such as Python wheels) will still run
+against old versions of MLNX-OFED, but extension features such as multi-packet
+receive queues and packet timestamps will not work. It is recommended that if
+you are using ibverbs acceleration with older MLNX-OFED drivers that you stick
+with spead2 2.x until you're able to upgrade the drivers and spead2
+simultaneously.
+
+Other changes:
+
+- Support hardware send rate limiting when using ibverbs.
+- Discover libibverbs and pcap using pkg-config where possible.
+- Make :program:`configure` print out the configuration that will be compiled.
+- Update the Python wheels to use manylinux2014. This uses a newer compiler
+  (potentially giving better performance) and supports :c:func:`sendmmsg`.
+- Add wheels for Python 3.9.
+- A number of deprecated functions have been removed.
+- Avoid ibverbs code creating a send queue for receiver or vice versa.
+- Rename ``slave`` option to :program:`spead2_bench` to ``agent``.
+
+.. rubric:: 2.1.2
+
+- Make verbs acceleration work when run against MLNX OFED 5.x, including with
+  Python wheels. Note that it will not use multi-packet receive queues, so
+  receive performance may still be better on MLNX OFED 4.9.
+
+.. rubric:: 2.1.1
+
+- Update pybind to 2.5.0.
+- Fix compilation against latest rdma-core.
+- Some documentation cleanup.
+
 .. rubric:: 2.1.0
 
 - Support unicast receive with ibverbs acceleration (including in
@@ -62,14 +244,14 @@ Changelog
 
 - Significant performance improvements to send code (in some cases an order of
   magnitude improvement).
-- Add :option:`--max-heap` option to :program:`spead2_send` and
+- Add :option:`!--max-heap` option to :program:`spead2_send` and
   :program:`spead2_send.py` to control the depth of the send queue.
-- Change the meaning of the :option:`--heaps` option in :program:`spead2_bench`
+- Change the meaning of the :option:`!--heaps` option in :program:`spead2_bench`
   and :program:`spead2_bench.py`: it now also controls the depth of the sending
   queue.
 - Fix a bug in send rate limiting that could allow the target rate to be
   exceeded under some conditions.
-- Remove :option:`--threads` option from C++ :program:`spead2_send`, as the new
+- Remove :option:`!--threads` option from C++ :program:`spead2_send`, as the new
   optimised implementation isn't thread-safe.
 - Disable the ``test_numpy_large`` test on macOS, which was causing frequent
   failures on TravisCI due to dropped packets.
@@ -163,9 +345,9 @@ Changelog
 
 - Add support for TCP/IP (contributed by Rodrigo Tobar).
 - Changed command-line options for
-  :program:`spead2_send`/:program:`spead2_recv`: :option:`--ibv` and
-  :option:`--netmap` are now boolean flags, and the interface address is set
-  with :option:`--bind`.
+  :program:`spead2_send`/:program:`spead2_recv`: :option:`!--ibv` and
+  :option:`!--netmap` are now boolean flags, and the interface address is set
+  with :option:`!--bind`.
 - Added option to specify interface address for
   :cpp:class:`spead2::send::udp_stream` even when not using the multicast
   constructors.
@@ -189,7 +371,7 @@ Changelog
 
 - Add progress reports to mcdump
 - Add ability to pass ``-`` as filename to mcdump to skip file writing.
-- Add :option:`--count` option to mcdump
+- Add :option:`!--count` option to mcdump
 
 .. rubric:: Version 1.7.1
 
@@ -207,7 +389,7 @@ that prevented the asyncio integration from being included.
 .. rubric:: Version 1.6.0
 
 - Change :program:`spead2_send.py` and :program:`spead2_send` to interpret
-  the :option:`--rate` option as Gb/s and not Gib/s.
+  the :option:`!--rate` option as Gb/s and not Gib/s.
 - Change send rate limiting to bound the rate at which we catch up if we fall
   behind. This is controlled by a new attribute of
   :class:`~spead2.send.StreamConfig`.
@@ -240,7 +422,7 @@ that prevented the asyncio integration from being included.
 
 .. rubric:: Version 1.4.0
 
-- Remove :option:`--bind` option to :program:`spead2_recv.py` and :program:`spead2_recv`.
+- Remove :option:`!--bind` option to :program:`spead2_recv.py` and :program:`spead2_recv`.
   Instead, use :samp:`{host}:{port}` as the source. This allows subscribing to
   multiple multicast groups.
 - Improved access to information about incomplete heaps
@@ -248,7 +430,7 @@ that prevented the asyncio integration from being included.
 - Add :py:attr:`.MemoryPool.warn_on_empty` control.
 - Add warning when a stream ringbuffer is full.
 - Add statistics to streams.
-- Fix spead2_send.py to send a stop heap when using :option:`--heaps`. It was
+- Fix spead2_send.py to send a stop heap when using :option:`!--heaps`. It was
   acccidentally broken in 1.2.0.
 - Add support for packet timestamping in mcdump.
 - Return the previous logging function from :cpp:func:`spead2::set_log_function`.
@@ -343,7 +525,7 @@ that prevented the asyncio integration from being included.
   operate on any type of stream. This will **break** code that depended on the
   old template class of the same name, which has been renamed to
   :cpp:class:`spead2::send::stream_impl`.
-- Add :option:`--memcpy-nt` to :program:`spead2_recv.py` and
+- Add :option:`!--memcpy-nt` to :program:`spead2_recv.py` and
   :program:`spead2_bench.py`
 - Multicast support in :program:`spead2_bench.py` and :program:`spead2_bench`
 - Changes to the algorithm for :program:`spead2_bench.py` and
@@ -382,7 +564,7 @@ that prevented the asyncio integration from being included.
 
 - Fixed a bug in registering `add_udp_ibv_reader` in Python, which broke
   :program:`spead2_recv.py`, and possibly any other code using this API.
-- Fixed :program:`spead2_recv.py` ignoring :option:`--ibv-max-poll` option
+- Fixed :program:`spead2_recv.py` ignoring :option:`!--ibv-max-poll` option
 
 .. rubric:: Version 0.10.0
 

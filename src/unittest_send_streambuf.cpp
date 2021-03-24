@@ -1,4 +1,4 @@
-/* Copyright 2019 SKA South Africa
+/* Copyright 2019-2020 National Research Foundation (SARAO)
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -69,7 +69,7 @@ BOOST_AUTO_TEST_CASE(send_fail)
     stream.async_send_heap(h, handler);
     auto result = result_promise.get_future().get();
     BOOST_CHECK_EQUAL(result.first, boost::asio::error::eof);
-    BOOST_CHECK_EQUAL(result.second, 0);
+    BOOST_CHECK_EQUAL(result.second, 20);
 }
 
 BOOST_AUTO_TEST_SUITE_END()  // streambuf

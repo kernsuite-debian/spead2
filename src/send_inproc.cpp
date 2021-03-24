@@ -1,4 +1,4 @@
-/* Copyright 2018, 2019 SKA South Africa
+/* Copyright 2018-2020 National Research Foundation (SARAO)
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -22,63 +22,140 @@
 #include <spead2/common_inproc.h>
 #include <spead2/send_packet.h>
 #include <spead2/send_inproc.h>
+#include <spead2/send_writer.h>
 
 namespace spead2
 {
 namespace send
 {
 
-namespace detail
+namespace
 {
 
-inproc_queue::packet copy_packet(const packet &in)
+static inproc_queue::packet copy_packet(const std::vector<boost::asio::const_buffer> &in)
 {
-    std::size_t size = boost::asio::buffer_size(in.buffers);
+    std::size_t size = boost::asio::buffer_size(in);
     inproc_queue::packet out;
     out.data.reset(new std::uint8_t[size]);
     out.size = size;
     boost::asio::mutable_buffer buffer(out.data.get(), size);
-    boost::asio::buffer_copy(buffer, in.buffers);
+    boost::asio::buffer_copy(buffer, in);
     return out;
 }
 
-} // namespace detail
-
-void inproc_stream::async_send_packets()
+class inproc_writer : public writer
 {
-    for (std::size_t i = 0; i < n_current_packets; i++)
+private:
+    std::vector<std::shared_ptr<inproc_queue>> queues;
+    std::unique_ptr<std::uint8_t[]> scratch;   ///< Scratch space for constructing packets
+
+    virtual void wakeup() override;
+
+public:
+    /// Constructor
+    inproc_writer(
+        io_service_ref io_service,
+        const std::vector<std::shared_ptr<inproc_queue>> &queues,
+        const stream_config &config);
+
+    /// Get the underlying storage queue
+    const std::vector<std::shared_ptr<inproc_queue>> &get_queues() const;
+
+    virtual std::size_t get_num_substreams() const override final { return queues.size(); }
+};
+
+void inproc_writer::wakeup()
+{
+    transmit_packet data;
+    switch (get_packet(data, scratch.get()))
     {
-        inproc_queue::packet dup = detail::copy_packet(current_packets[i].pkt);
-        try
-        {
-            queue->buffer.push(std::move(dup));
-            current_packets[i].result = boost::system::error_code();
-        }
-        catch (ringbuffer_stopped &)
-        {
-            current_packets[i].result = boost::asio::error::operation_aborted;
-        }
+    case packet_result::SLEEP:
+        sleep();
+        return;
+    case packet_result::EMPTY:
+        request_wakeup();
+        return;
+    case packet_result::SUCCESS:
+        break;
     }
-    get_io_service().post([this] { packets_handler(); });
+
+    inproc_queue::packet dup = copy_packet(data.buffers);
+    std::size_t size = dup.size;
+    auto *item = data.item;
+    try
+    {
+        queues[data.substream_index]->buffer.push(std::move(dup));
+        item->bytes_sent += size;
+    }
+    catch (ringbuffer_stopped &)
+    {
+        item->result = boost::asio::error::operation_aborted;
+    }
+    if (data.last)
+        groups_completed(1);
+    post_wakeup();
 }
+
+const std::vector<std::shared_ptr<inproc_queue>> &inproc_writer::get_queues() const
+{
+    return queues;
+}
+
+inproc_writer::inproc_writer(
+    io_service_ref io_service,
+    const std::vector<std::shared_ptr<inproc_queue>> &queues,
+    const stream_config &config)
+    : writer(std::move(io_service), config),
+    queues(queues),
+    scratch(new std::uint8_t[config.get_max_packet_size()])
+{
+    if (queues.empty())
+        throw std::invalid_argument("queues is empty");
+}
+
+} // anonymous namespace
 
 inproc_stream::inproc_stream(
     io_service_ref io_service,
     std::shared_ptr<inproc_queue> queue,
     const stream_config &config)
-    : stream_impl<inproc_stream>(std::move(io_service), config, 1),
-    queue(std::move(queue))
+    : inproc_stream(
+        std::move(io_service),
+        std::vector<std::shared_ptr<inproc_queue>>{std::move(queue)},
+        config)
 {
 }
 
-inproc_stream::~inproc_stream()
+inproc_stream::inproc_stream(
+    io_service_ref io_service,
+    std::initializer_list<std::shared_ptr<inproc_queue>> queues,
+    const stream_config &config)
+    : inproc_stream(
+        std::move(io_service),
+        std::vector<std::shared_ptr<inproc_queue>>(queues),
+        config)
 {
-    flush();
 }
 
-std::shared_ptr<inproc_queue> inproc_stream::get_queue() const
+inproc_stream::inproc_stream(
+    io_service_ref io_service,
+    const std::vector<std::shared_ptr<inproc_queue>> &queues,
+    const stream_config &config)
+    : stream(std::unique_ptr<writer>(new inproc_writer(std::move(io_service), queues, config)))
 {
-    return queue;
+}
+
+const std::vector<std::shared_ptr<inproc_queue>> &inproc_stream::get_queues() const
+{
+    return static_cast<const inproc_writer &>(get_writer()).get_queues();
+}
+
+const std::shared_ptr<inproc_queue> &inproc_stream::get_queue() const
+{
+    const auto &queues = get_queues();
+    if (queues.size() != 1)
+        throw std::runtime_error("get_queue only works when there is a single queue. Use get_queues instead");
+    return queues[0];
 }
 
 } // namespace send

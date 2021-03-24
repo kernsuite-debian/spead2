@@ -1,4 +1,4 @@
-# Copyright 2016 SKA South Africa
+# Copyright 2016 National Research Foundation (SARAO)
 #
 # This program is free software: you can redistribute it and/or modify it under
 # the terms of the GNU Lesser General Public License as published by the Free
@@ -20,9 +20,11 @@ nobase_include_HEADERS = \
 	spead2/common_features.h \
 	spead2/common_flavour.h \
 	spead2/common_ibv.h \
-	spead2/common_ibv_loader.h \
-	spead2/common_ibv_loader_utils.h \
 	spead2/common_inproc.h \
+	spead2/common_loader_ibv.h \
+	spead2/common_loader_mlx5dv.h \
+	spead2/common_loader_rdmacm.h \
+	spead2/common_loader_utils.h \
 	spead2/common_logging.h \
 	spead2/common_memcpy.h \
 	spead2/common_memory_allocator.h \
@@ -53,7 +55,10 @@ nobase_include_HEADERS = \
 	spead2/send_inproc.h \
 	spead2/send_packet.h \
 	spead2/send_streambuf.h \
+	spead2/send_stream_config.h \
 	spead2/send_stream.h \
+	spead2/send_tcp.h \
 	spead2/send_udp.h \
 	spead2/send_udp_ibv.h \
-	spead2/send_utils.h
+	spead2/send_utils.h \
+	spead2/send_writer.h

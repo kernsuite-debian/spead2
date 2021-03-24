@@ -1,4 +1,4 @@
-/* Copyright 2019 SKA South Africa
+/* Copyright 2019-2020 National Research Foundation (SARAO)
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -25,7 +25,7 @@
 # define _GNU_SOURCE
 #endif
 #include <spead2/common_features.h>
-#if SPEAD2_USE_IBV_MPRQ
+#if SPEAD2_USE_MLX5DV
 #include <infiniband/verbs.h>
 #include <rdma/rdma_cma.h>
 
@@ -57,13 +57,12 @@ private:
     friend class detail::udp_ibv_reader_base<udp_ibv_mprq_reader>;
 
     // All the data structures required by ibverbs
-    ibv_exp_res_domain_t res_domain;
-    ibv_exp_wq_t wq;
-    ibv_exp_rwq_ind_table_t rwq_ind_table;
-    ibv_exp_cq_family_v1_t cq_intf;
-    ibv_exp_wq_family_t wq_intf;
+    ibv_cq_ex_t recv_cq;
+    ibv_wq_mprq_t wq;
+    ibv_rwq_ind_table_t rwq_ind_table;
     ibv_qp_t qp;
     ibv_mr_t mr;
+    std::vector<ibv_flow_t> flows;
 
     /// Data buffer for all the packets
     memory_allocator::pointer buffer;
@@ -83,7 +82,7 @@ private:
 
 public:
     /**
-     * Constructor.
+     * Constructor with single endpoint (deprecated).
      *
      * @param owner        Owning stream
      * @param endpoint     Multicast group and port
@@ -114,13 +113,13 @@ public:
         stream &owner,
         const boost::asio::ip::udp::endpoint &endpoint,
         const boost::asio::ip::address &interface_address,
-        std::size_t max_size = default_max_size,
-        std::size_t buffer_size = default_buffer_size,
+        std::size_t max_size = udp_ibv_config::default_max_size,
+        std::size_t buffer_size = udp_ibv_config::default_buffer_size,
         int comp_vector = 0,
-        int max_poll = default_max_poll);
+        int max_poll = udp_ibv_config::default_max_poll);
 
     /**
-     * Constructor with multiple endpoints.
+     * Constructor with multiple endpoints (deprecated).
      *
      * @param owner        Owning stream
      * @param endpoints    Multicast groups and ports
@@ -151,10 +150,21 @@ public:
         stream &owner,
         const std::vector<boost::asio::ip::udp::endpoint> &endpoints,
         const boost::asio::ip::address &interface_address,
-        std::size_t max_size = default_max_size,
-        std::size_t buffer_size = default_buffer_size,
+        std::size_t max_size = udp_ibv_config::default_max_size,
+        std::size_t buffer_size = udp_ibv_config::default_buffer_size,
         int comp_vector = 0,
-        int max_poll = default_max_poll);
+        int max_poll = udp_ibv_config::default_max_poll);
+
+    /**
+     * Constructor.
+     *
+     * @param owner        Owning stream
+     * @param config       Configuration
+     *
+     * @throws std::invalid_argument If no endpoints are set.
+     * @throws std::invalid_argument If no interface address is set.
+     */
+    udp_ibv_mprq_reader(stream &owner, const udp_ibv_config &config);
 };
 
 } // namespace recv
