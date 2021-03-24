@@ -1,4 +1,4 @@
-/* Copyright 2016, 2019-2020 SKA South Africa
+/* Copyright 2016, 2019-2020 National Research Foundation (SARAO)
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -36,6 +36,7 @@
 #include <vector>
 #include <boost/asio.hpp>
 #include <boost/noncopyable.hpp>
+#include <spead2/common_defines.h>
 #include <spead2/common_ibv.h>
 #include <spead2/common_logging.h>
 #include <spead2/recv_reader.h>
@@ -44,8 +45,41 @@
 
 namespace spead2
 {
+
+// Prevent the compiler instantiating the template in all translation units
+// (we'll explicitly instantiate it in recv_udp_ibv.cpp).
+namespace recv { class udp_ibv_config; }
+extern template class detail::udp_ibv_config_base<recv::udp_ibv_config>;
+
 namespace recv
 {
+
+/**
+ * Configuration for @ref udp_ibv_reader.
+ */
+class udp_ibv_config : public spead2::detail::udp_ibv_config_base<udp_ibv_config>
+{
+public:
+    /// Receive buffer size, if none is explicitly set
+    static constexpr std::size_t default_buffer_size = 16 * 1024 * 1024;
+    /// Maximum packet size to accept, if none is explicitly set
+    static constexpr std::size_t default_max_size = udp_reader_base::default_max_size;
+    /// Number of times to poll in a row, if none is explicitly set
+    static constexpr int default_max_poll = 10;
+
+private:
+    std::size_t max_size = default_max_size;
+
+    friend class spead2::detail::udp_ibv_config_base<udp_ibv_config>;
+    static void validate_endpoint(const boost::asio::ip::udp::endpoint &endpoint);
+
+public:
+    /// Get maximum packet size to accept
+    std::size_t get_max_size() const { return max_size; }
+
+    /// Set maximum packet size to accept
+    udp_ibv_config &set_max_size(std::size_t max_size);
+};
 
 namespace detail
 {
@@ -74,8 +108,6 @@ protected:
     ibv_pd_t pd;
     ibv_comp_channel_t comp_channel;
     boost::asio::posix::stream_descriptor comp_channel_wrapper;
-    std::vector<ibv_flow_t> flows;
-    ibv_cq_t recv_cq;
 
     ///< Maximum supported packet size
     const std::size_t max_size;
@@ -88,18 +120,14 @@ protected:
                      const boost::asio::ip::address &interface_address);
 
 public:
-    /// Receive buffer size, if none is explicitly passed to the constructor
-    static constexpr std::size_t default_buffer_size = 16 * 1024 * 1024;
-    /// Number of times to poll in a row, if none is explicitly passed to the constructor
-    static constexpr int default_max_poll = 10;
+    SPEAD2_DEPRECATED("Use spead2::recv::udp_ibv_config::default_buffer_size")
+    static constexpr std::size_t default_buffer_size = udp_ibv_config::default_buffer_size;
+    SPEAD2_DEPRECATED("Use spead2::recv::udp_ibv_config::default_max_poll")
+    static constexpr int default_max_poll = udp_ibv_config::default_max_poll;
 
     udp_ibv_reader_core(
         stream &owner,
-        const std::vector<boost::asio::ip::udp::endpoint> &endpoints,
-        const boost::asio::ip::address &interface_address,
-        std::size_t max_size,
-        int comp_vector,
-        int max_poll);
+        const udp_ibv_config &config);
 
     virtual void stop() override;
 };
@@ -151,7 +179,9 @@ void udp_ibv_reader_base<Derived>::packet_handler(const boost::system::error_cod
             while (comp_channel.get_event(&event_cq, &event_context))
             {
                 // TODO: defer acks until shutdown
-                recv_cq.ack_events(1);
+                // TODO: make both cases use ibv_cq_ex_t so that recv_cq can
+                // move back into base.
+                static_cast<Derived *>(this)->recv_cq.ack_events(1);
             }
         }
         if (state.is_stopped())
@@ -173,7 +203,7 @@ void udp_ibv_reader_base<Derived>::packet_handler(const boost::system::error_cod
                          * before req_notify_cq, failing to trigger a
                          * notification.
                          */
-                        recv_cq.req_notify(false);
+                        static_cast<Derived *>(this)->recv_cq.req_notify(false);
                         need_poll = false;
                     }
                 }
@@ -244,8 +274,14 @@ private:
 
     // All the data structures required by ibverbs
     ibv_cq_t send_cq;
+    ibv_cq_t recv_cq;
     ibv_qp_t qp;
     ibv_mr_t mr;
+    /* Note: don't try to move this to the base class, even though it is
+     * shared with udp_ibv_reader_mprq. It needs to be destroyed before the
+     * QP, otherwise destroying the QP fails with EBUSY.
+     */
+    std::vector<ibv_flow_t> flows;
 
     ///< Number of packets that can be queued
     const std::size_t n_slots;
@@ -263,7 +299,7 @@ private:
 
 public:
     /**
-     * Constructor.
+     * Constructor with single endpoint (deprecated).
      *
      * @param owner        Owning stream
      * @param endpoint     Address and port. Note that is it possible for the address to be
@@ -295,17 +331,18 @@ public:
      *                               IPv4 address
      * @throws std::invalid_argument If @a interface_address is not an IPv4 address
      */
+    SPEAD2_DEPRECATED("Use udp_ibv_config")
     udp_ibv_reader(
         stream &owner,
         const boost::asio::ip::udp::endpoint &endpoint,
         const boost::asio::ip::address &interface_address,
-        std::size_t max_size = default_max_size,
-        std::size_t buffer_size = default_buffer_size,
+        std::size_t max_size = udp_ibv_config::default_max_size,
+        std::size_t buffer_size = udp_ibv_config::default_buffer_size,
         int comp_vector = 0,
-        int max_poll = default_max_poll);
+        int max_poll = udp_ibv_config::default_max_poll);
 
     /**
-     * Constructor with multiple endpoints.
+     * Constructor with multiple endpoints (deprecated).
      *
      * @param owner        Owning stream
      * @param endpoints    Addresses and ports. Note that is it possible for the addresses to be
@@ -333,18 +370,31 @@ public:
      *                     non-negative) or letting other code run on the
      *                     thread (if @a comp_vector is negative).
      *
+     * @throws std::invalid_argument If @a endpoints is empty.
      * @throws std::invalid_argument If any element of @a endpoints is specified and is not
      *                               an IPv4 address
      * @throws std::invalid_argument If @a interface_address is not an IPv4 address
      */
+    SPEAD2_DEPRECATED("Use udp_ibv_config")
     udp_ibv_reader(
         stream &owner,
         const std::vector<boost::asio::ip::udp::endpoint> &endpoints,
         const boost::asio::ip::address &interface_address,
-        std::size_t max_size = default_max_size,
-        std::size_t buffer_size = default_buffer_size,
+        std::size_t max_size = udp_ibv_config::default_max_size,
+        std::size_t buffer_size = udp_ibv_config::default_buffer_size,
         int comp_vector = 0,
-        int max_poll = default_max_poll);
+        int max_poll = udp_ibv_config::default_max_poll);
+
+    /**
+     * Constructor.
+     *
+     * @param owner        Owning stream
+     * @param config       Configuration
+     *
+     * @throws std::invalid_argument If no endpoints are set.
+     * @throws std::invalid_argument If no interface address is set.
+     */
+    udp_ibv_reader(stream &owner, const udp_ibv_config &config);
 };
 
 } // namespace recv
@@ -367,7 +417,7 @@ struct reader_factory<udp_ibv_reader>
          * bad idea if any of them are rvalue references. But the constructors
          * we're forwarding to don't have any.
          */
-#if SPEAD2_USE_IBV_MPRQ
+#if SPEAD2_USE_MLX5DV
         try
         {
             std::unique_ptr<reader> reader(new udp_ibv_mprq_reader(
@@ -377,7 +427,8 @@ struct reader_factory<udp_ibv_reader>
         }
         catch (std::system_error &e)
         {
-            if (e.code() != std::errc::not_supported)
+            if (e.code() != std::errc::not_supported                // ENOTSUP
+                && e.code() != std::errc::function_not_supported)   // ENOSYS
                 throw;
             log_debug("Multi-packet receive queues not supported (%1%), falling back", e.what());
             return std::unique_ptr<reader>(new udp_ibv_reader(

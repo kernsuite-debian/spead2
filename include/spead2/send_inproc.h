@@ -1,4 +1,4 @@
-/* Copyright 2018, 2019 SKA South Africa
+/* Copyright 2018-2020 National Research Foundation (SARAO)
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -21,14 +21,12 @@
 #ifndef SPEAD2_SEND_INPROC_H
 #define SPEAD2_SEND_INPROC_H
 
-#include <cstddef>
-#include <utility>
+#include <vector>
 #include <memory>
+#include <initializer_list>
 #include <boost/asio.hpp>
 #include <spead2/common_thread_pool.h>
-#include <spead2/common_ringbuffer.h>
 #include <spead2/common_inproc.h>
-#include <spead2/send_packet.h>
 #include <spead2/send_stream.h>
 
 namespace spead2
@@ -36,33 +34,40 @@ namespace spead2
 namespace send
 {
 
-namespace detail
+class inproc_stream : public stream
 {
-
-/// Create a copy of a packet that owns all its own data
-inproc_queue::packet copy_packet(const packet &in);
-
-} // namespace detail
-
-class inproc_stream : public stream_impl<inproc_stream>
-{
-private:
-    friend class stream_impl<inproc_stream>;
-    std::shared_ptr<inproc_queue> queue;
-
-    void async_send_packets();
-
 public:
     /// Constructor
+    inproc_stream(
+        io_service_ref io_service,
+        const std::vector<std::shared_ptr<inproc_queue>> &queues,
+        const stream_config &config = stream_config());
+
+    /// Backwards-compatibility constructor (taking only a single queue)
+    SPEAD2_DEPRECATED("use a vector of queues")
     inproc_stream(
         io_service_ref io_service,
         std::shared_ptr<inproc_queue> queue,
         const stream_config &config = stream_config());
 
-    /// Get the underlying storage queue
-    std::shared_ptr<inproc_queue> get_queue() const;
+    /* Force an initializer list to forward to the vector version (without this,
+     * a singleton initializer list forwards to the scalar version).
+     */
+    inproc_stream(
+        io_service_ref io_service,
+        std::initializer_list<std::shared_ptr<inproc_queue>> queues,
+        const stream_config &config = stream_config());
 
-    virtual ~inproc_stream();
+    /// Get the underlying storage queues
+    const std::vector<std::shared_ptr<inproc_queue>> &get_queues() const;
+
+    /**
+     * Get the underlying storage queue (backwards compatibility).
+     *
+     * @throws runtime_error if there are multiple storage queues.
+     */
+    SPEAD2_DEPRECATED("use get_queues")
+    const std::shared_ptr<inproc_queue> &get_queue() const;
 };
 
 } // namespace send

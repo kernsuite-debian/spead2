@@ -14,6 +14,8 @@ if [ "$TEST_CXX" = "yes" ]; then
         --with-sendmmsg="${SENDMMSG:-no}" \
         --with-eventfd="${EVENTFD:-no}" \
         --with-ibv="${IBV:-no}" \
+        --with-ibv-hw-rate-limit="${IBV_HW_RATE_LIMIT:-no}" \
+        --with-mlx5dv="${MLX5DV:-no}" \
         --with-pcap="${PCAP:-no}" \
         --enable-coverage="${COVERAGE:-no}" \
         --disable-optimized \
@@ -30,19 +32,15 @@ if [ "$TEST_PYTHON" = "yes" ]; then
     if [ "$COVERAGE" = "yes" ]; then
         echo '[build_ext]' > setup.cfg
         echo 'coverage = yes' >> setup.cfg
-        # pip's build isolation prevents us getting .gcno files, so build with setuptools
-        CC="$CC -Werror" python ./setup.py install
+        # pip's build isolation prevents us getting .gcno files, so build in place
+        CC="$CC -Werror" pip install -v -e .
     else
         CC="$CC -Werror" pip install -v .
     fi
-    # Avoid running nosetests from installation directory, to avoid picking up
-    # things from the local tree that aren't installed.
-    pushd /
-    nosetests --with-ignore-docstring -v spead2
+    pytest
     for test in test_logging_shutdown test_running_thread_pool test_running_stream; do
         echo "Running shutdown test $test"
-        python -c "import spead2.test.shutdown; spead2.test.shutdown.$test()"
+        python -c "import tests.shutdown; tests.shutdown.$test()"
     done
-    popd
     flake8
 fi

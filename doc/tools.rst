@@ -17,7 +17,7 @@ and run
 
 .. code-block:: sh
 
-   spead2_bench.py slave <port>
+   spead2_bench.py agent <port>
 
 Then, on the sender, run
 
@@ -115,10 +115,6 @@ These options are important for performance:
 
 Limitations
 ^^^^^^^^^^^
-
-- Timestamps are only collected if Mellanox extensions to the verbs API are
-  detected at compile time. Otherwise, all packets have a zero timestamp in the
-  file.
 
 - Only IPv4 is supported.
 

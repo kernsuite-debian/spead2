@@ -1,4 +1,4 @@
-/* Copyright 2015, 2019-2020 SKA South Africa
+/* Copyright 2015, 2019-2020 National Research Foundation (SARAO)
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -85,16 +85,6 @@ udp_reader::udp_reader(
 #endif
 
     enqueue_receive();
-}
-
-udp_reader::udp_reader(
-    stream &owner,
-    boost::asio::ip::udp::socket &&socket,
-    const boost::asio::ip::udp::endpoint &endpoint,
-    std::size_t max_size,
-    std::size_t buffer_size)
-    : udp_reader(owner, bind_socket(std::move(socket), endpoint, buffer_size), max_size)
-{
 }
 
 static boost::asio::ip::udp::socket make_bound_v4_socket(
@@ -320,7 +310,13 @@ std::unique_ptr<reader> reader_factory<udp_reader>::make_reader(
             log_info("Overriding reader for %1%:%2% to use ibverbs",
                      endpoint.address().to_string(), endpoint.port());
             return reader_factory<udp_ibv_reader>::make_reader(
-                owner, endpoint, ibv_interface, max_size, buffer_size, ibv_comp_vector);
+                owner,
+                udp_ibv_config()
+                    .add_endpoint(endpoint)
+                    .set_interface_address(ibv_interface)
+                    .set_max_size(max_size)
+                    .set_buffer_size(buffer_size)
+                    .set_comp_vector(ibv_comp_vector));
         }
 #endif
     }
@@ -343,7 +339,13 @@ std::unique_ptr<reader> reader_factory<udp_reader>::make_reader(
             log_info("Overriding reader for %1%:%2% to use ibverbs",
                      endpoint.address().to_string(), endpoint.port());
             return reader_factory<udp_ibv_reader>::make_reader(
-                owner, endpoint, interface_address, max_size, buffer_size, ibv_comp_vector);
+                owner,
+                udp_ibv_config()
+                    .add_endpoint(endpoint)
+                    .set_interface_address(interface_address)
+                    .set_max_size(max_size)
+                    .set_buffer_size(buffer_size)
+                    .set_comp_vector(ibv_comp_vector));
         }
 #endif
     }
@@ -359,17 +361,6 @@ std::unique_ptr<reader> reader_factory<udp_reader>::make_reader(
 {
     return std::unique_ptr<reader>(new udp_reader(
             owner, endpoint, max_size, buffer_size, interface_index));
-}
-
-std::unique_ptr<reader> reader_factory<udp_reader>::make_reader(
-    stream &owner,
-    boost::asio::ip::udp::socket &&socket,
-    const boost::asio::ip::udp::endpoint &endpoint,
-    std::size_t max_size,
-    std::size_t buffer_size)
-{
-    return std::unique_ptr<reader>(new udp_reader(
-            owner, std::move(socket), endpoint, max_size, buffer_size));
 }
 
 std::unique_ptr<reader> reader_factory<udp_reader>::make_reader(

@@ -1,4 +1,4 @@
-# Copyright 2016 SKA South Africa
+# Copyright 2016, 2020 National Research Foundation (SARAO)
 #
 # This program is free software: you can redistribute it and/or modify it under
 # the terms of the GNU Lesser General Public License as published by the Free
@@ -26,13 +26,13 @@ mcdump_SOURCES = mcdump.cpp
 mcdump_LDADD = -lboost_program_options $(LDADD)
 endif
 
-spead2_recv_SOURCES = spead2_recv.cpp
+spead2_recv_SOURCES = spead2_recv.cpp spead2_cmdline.cpp
 spead2_recv_LDADD = -lboost_program_options $(LDADD)
 
-spead2_send_SOURCES = spead2_send.cpp
+spead2_send_SOURCES = spead2_send.cpp spead2_cmdline.cpp
 spead2_send_LDADD = -lboost_program_options $(LDADD)
 
-spead2_bench_SOURCES = spead2_bench.cpp
+spead2_bench_SOURCES = spead2_bench.cpp spead2_cmdline.cpp
 spead2_bench_LDADD = -lboost_program_options $(LDADD)
 
 spead2_unittest_SOURCES = \
@@ -46,15 +46,18 @@ spead2_unittest_SOURCES = \
 	unittest_recv_custom_memcpy.cpp \
 	unittest_semaphore.cpp \
 	unittest_send_heap.cpp \
-	unittest_send_streambuf.cpp
+	unittest_send_streambuf.cpp \
+	unittest_send_tcp.cpp
 spead2_unittest_CPPFLAGS = -DBOOST_TEST_DYN_LINK $(AM_CPPFLAGS)
 spead2_unittest_LDADD = -lboost_unit_test_framework $(LDADD)
 
 libspead2_a_SOURCES = \
 	common_flavour.cpp \
+	common_loader_ibv.cpp \
+	common_loader_mlx5dv.cpp \
+	common_loader_rdmacm.cpp \
+	common_loader_utils.cpp \
 	common_ibv.cpp \
-	common_ibv_loader.cpp \
-	common_ibv_loader_utils.cpp \
 	common_inproc.cpp \
 	common_logging.cpp \
 	common_memcpy.cpp \
@@ -83,6 +86,8 @@ libspead2_a_SOURCES = \
 	send_packet.cpp \
 	send_streambuf.cpp \
 	send_stream.cpp \
+	send_stream_config.cpp \
 	send_tcp.cpp \
 	send_udp.cpp \
-	send_udp_ibv.cpp
+	send_udp_ibv.cpp \
+	send_writer.cpp

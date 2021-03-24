@@ -1,4 +1,4 @@
-/* Copyright 2015 SKA South Africa
+/* Copyright 2015, 2020 National Research Foundation (SARAO)
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -140,6 +140,10 @@ private:
      * of that contiguous region. Since packets are expected to arrive
      * more-or-less in order (or more-or-less in order for each of a small
      * number of streams) the map is not expected to grow large.
+     *
+     * It is only used when the stream is constructed with
+     * allow_out_of_order=true. When it is false, the received range is
+     * assumed to be [0, received_length).
      */
     std::map<s_item_pointer_t, s_item_pointer_t> payload_ranges;
 
@@ -182,10 +186,12 @@ public:
      * - duplicate packet
      * - inconsistent heap length
      * - payload range is beyond the heap length
+     * - allow_out_of_order is false and this isn't the next packet for the heap
      */
     bool add_packet(const packet_header &packet,
                     const packet_memcpy_function &packet_memcpy,
-                    memory_allocator &allocator);
+                    memory_allocator &allocator,
+                    bool allow_out_of_order);
     /// True if the heap is complete
     bool is_complete() const;
     /// True if the heap is contiguous

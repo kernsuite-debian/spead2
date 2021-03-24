@@ -1,4 +1,4 @@
-/* Copyright 2015, 2018-2020 SKA South Africa
+/* Copyright 2015, 2018-2020 National Research Foundation (SARAO)
  *
  * This program is free software: you can redistribute it and/or modify it under
  * the terms of the GNU Lesser General Public License as published by the Free
@@ -22,10 +22,12 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <random>
 #include <boost/program_options.hpp>
 #include <boost/asio.hpp>
 #include <boost/lexical_cast.hpp>
 #include <spead2/common_thread_pool.h>
+#include <spead2/common_endian.h>
 #include <spead2/recv_udp.h>
 #include <spead2/recv_tcp.h>
 #if SPEAD2_USE_IBV
@@ -37,6 +39,7 @@
 #include <spead2/recv_heap.h>
 #include <spead2/recv_live_heap.h>
 #include <spead2/recv_ring_stream.h>
+#include "spead2_cmdline.h"
 
 namespace po = boost::program_options;
 namespace asio = boost::asio;
@@ -45,28 +48,12 @@ struct options
 {
     bool quiet = false;
     bool descriptors = false;
-    bool pyspead = false;
     bool joint = false;
-    bool tcp = false;
-    std::string bind;
-    std::size_t packet;
-    std::size_t buffer;
     int threads = 1;
-    std::size_t heaps = spead2::recv::stream::default_max_heaps;
-    std::size_t ring_heaps = spead2::recv::ring_stream_base::default_ring_heaps;
-    bool mem_pool = false;
-    std::size_t mem_lower = 16384;
-    std::size_t mem_upper = 32 * 1024 * 1024;
-    std::size_t mem_max_free = 12;
-    std::size_t mem_initial = 8;
-    bool ring = false;
-    bool memcpy_nt = false;
-#if SPEAD2_USE_IBV
-    bool ibv = false;
-    int ibv_comp_vector = 0;
-    int ibv_max_poll = spead2::recv::udp_ibv_reader::default_max_poll;
-#endif
+    bool verify = false;
     std::vector<std::string> sources;
+    spead2::protocol_options protocol;
+    spead2::recv::receiver_options receiver;
 };
 
 typedef std::chrono::time_point<std::chrono::high_resolution_clock> time_point;
@@ -79,55 +66,25 @@ static void usage(std::ostream &o, const po::options_description &desc)
     o << desc;
 }
 
-template<typename T>
-static po::typed_value<T> *make_opt(T &var)
-{
-    return po::value<T>(&var)->default_value(var);
-}
-
-static po::typed_value<bool> *make_opt(bool &var)
-{
-    return po::bool_switch(&var)->default_value(var);
-}
-
-template<typename T>
-static po::typed_value<T> *make_opt_no_default(T &var)
-{
-    return po::value<T>(&var);
-}
-
 static options parse_args(int argc, const char **argv)
 {
     options opts;
     po::options_description desc, hidden, all;
+    spead2::option_adder adder(desc);
+    opts.protocol.enumerate(adder);
+    opts.receiver.enumerate(adder);
     desc.add_options()
-        ("quiet", make_opt(opts.quiet), "Only show total of heaps received")
-        ("descriptors", make_opt(opts.descriptors), "Show descriptors")
-        ("pyspead", make_opt(opts.pyspead), "Be bug-compatible with PySPEAD")
-        ("joint", make_opt(opts.joint), "Treat all sources as a single stream")
-        ("tcp", make_opt(opts.tcp), "Receive data over TCP instead of UDP")
-        ("bind", make_opt(opts.bind), "Interface address")
-        ("packet", make_opt_no_default(opts.packet), "Maximum packet size to use")
-        ("buffer", make_opt_no_default(opts.buffer), "Socket buffer size")
-        ("threads", make_opt(opts.threads), "Number of worker threads")
-        ("heaps", make_opt(opts.heaps), "Maximum number of in-flight heaps")
-        ("ring-heaps", make_opt(opts.ring_heaps), "Ring buffer capacity in heaps")
-        ("mem-pool", make_opt(opts.mem_pool), "Use a memory pool")
-        ("mem-lower", make_opt(opts.mem_lower), "Minimum allocation which will use the memory pool")
-        ("mem-upper", make_opt(opts.mem_upper), "Maximum allocation which will use the memory pool")
-        ("mem-max-free", make_opt(opts.mem_max_free), "Maximum free memory buffers")
-        ("mem-initial", make_opt(opts.mem_initial), "Initial free memory buffers")
-        ("ring", make_opt(opts.ring), "Use ringbuffer instead of callbacks")
-        ("memcpy-nt", make_opt(opts.memcpy_nt), "Use non-temporal memcpy")
-#if SPEAD2_USE_IBV
-        ("ibv", make_opt(opts.ibv), "Use ibverbs")
-        ("ibv-vector", make_opt(opts.ibv_comp_vector), "Interrupt vector (-1 for polled)")
-        ("ibv-max-poll", make_opt(opts.ibv_max_poll), "Maximum number of times to poll in a row")
-#endif
+        ("quiet", spead2::make_value_semantic(&opts.quiet), "Only show total of heaps received")
+        ("descriptors", spead2::make_value_semantic(&opts.descriptors), "Show descriptors")
+        ("joint", spead2::make_value_semantic(&opts.joint), "Treat all sources as a single stream")
+        ("threads", spead2::make_value_semantic(&opts.threads), "Number of worker threads")
+        ("verify", spead2::make_value_semantic(&opts.verify), "Verify payload (use spead2_send with same option")
     ;
 
     hidden.add_options()
-        ("source", po::value<std::vector<std::string>>()->composing(), "sources");
+        ("source", spead2::make_value_semantic(&opts.sources), "sources");
+    desc.add_options()
+        ("help,h", "Show help text");
     all.add(desc);
     all.add(hidden);
 
@@ -147,29 +104,10 @@ static options parse_args(int argc, const char **argv)
             usage(std::cout, desc);
             std::exit(0);
         }
-        if (!vm.count("source"))
-            throw po::error("At least one port is required");
-        opts.sources = vm["source"].as<std::vector<std::string>>();
-        if (!vm.count("packet"))
-        {
-            if (opts.tcp)
-                opts.packet = spead2::recv::tcp_reader::default_max_size;
-            else
-                opts.packet = spead2::recv::udp_reader::default_max_size;
-        }
-        if (!vm.count("buffer"))
-        {
-            if (opts.tcp)
-                opts.buffer = spead2::recv::tcp_reader::default_buffer_size;
-            else
-                opts.buffer = spead2::recv::udp_reader::default_buffer_size;
-        }
-#if SPEAD2_USE_IBV
-        if (opts.ibv && opts.bind.empty())
-            throw po::error("--ibv requires --bind");
-        if (opts.tcp && opts.ibv)
-            throw po::error("--ibv and --tcp are incompatible");
-#endif
+        if (opts.sources.empty())
+            throw po::error("At least one source is required");
+        opts.protocol.notify();
+        opts.receiver.notify(opts.protocol);
         return opts;
     }
     catch (po::error &e)
@@ -180,7 +118,7 @@ static options parse_args(int argc, const char **argv)
     }
 }
 
-void show_heap(const spead2::recv::heap &fheap, const options &opts)
+static void show_heap(const spead2::recv::heap &fheap, const options &opts)
 {
     if (opts.quiet)
         return;
@@ -236,6 +174,82 @@ void show_heap(const spead2::recv::heap &fheap, const options &opts)
     std::cout << std::noshowbase;
 }
 
+/* O(log(z)) version of engine.discard(z), which in GCC seems to be implemented in O(z). */
+template<std::uint_fast32_t a, std::uint_fast32_t m>
+static void fast_discard(std::linear_congruential_engine<std::uint_fast32_t, a, 0, m> &engine,
+                         unsigned long long z)
+{
+    if (z == 0)
+        return;
+    // There is no way to directly observe the current state. We can only
+    // advance to the following state.
+    std::uint64_t x = engine();
+    z--;
+    // Multiply by a^z mod m
+    std::uint64_t apow = a;
+    while (z > 0)
+    {
+        if (z & 1)
+            x = x * apow % m;
+        apow = apow * apow % m;
+        z >>= 1;
+    }
+    engine.seed(x);
+}
+
+static void verify_heap(const spead2::recv::heap &fheap, const options &opts)
+{
+    if (!opts.verify)
+        return;
+    const auto &items = fheap.get_items();
+
+    typedef uint32_t element_t;
+    bool first = true;
+    std::size_t elements = 0;
+    std::minstd_rand generator;
+    for (const auto &item : items)
+    {
+        if (item.id < 0x1000)
+            continue;
+        if (first)
+        {
+            elements = item.length / sizeof(element_t);
+            // The first heap gets numbered 1 rather than 0
+            std::uint64_t start_pos = elements * items.size() * (fheap.get_cnt() - 1);
+            fast_discard(generator, start_pos);
+            first = false;
+        }
+        if (item.length != elements * sizeof(element_t))
+        {
+            std::cerr << "Heap " << fheap.get_cnt()
+                << ", item 0x" << std::hex << item.id << std::dec
+                << " has an inconsistent length\n";
+            std::exit(1);
+        }
+        const element_t *data = reinterpret_cast<const element_t *>(item.ptr);
+        for (std::size_t i = 0; i < elements; i++)
+        {
+            element_t expected = generator();
+            element_t actual = spead2::betoh(data[i]);
+            if (expected != actual)
+            {
+                std::cerr << "Verification mismatch in heap " << fheap.get_cnt()
+                    << ", item 0x" << std::hex << item.id << std::dec
+                    << " offset " << i
+                    << "\nexpected 0x" << std::hex << expected << ", actual 0x" << actual << std::dec
+                    << std::endl;
+                std::exit(1);
+            }
+        }
+    }
+
+    if (first && !fheap.is_end_of_stream())
+    {
+        spead2::log_warning("Heap %d has no verifiable items but is not an end-of-stream heap",
+                            fheap.get_cnt());
+    }
+}
+
 class callback_stream : public spead2::recv::stream
 {
 private:
@@ -248,6 +262,7 @@ private:
         {
             spead2::recv::heap frozen(std::move(heap));
             show_heap(frozen, opts);
+            verify_heap(frozen, opts);
             n_complete++;
         }
         else if (!opts.quiet)
@@ -290,98 +305,18 @@ static std::unique_ptr<spead2::recv::stream> make_stream(
     using asio::ip::tcp;
 
     std::unique_ptr<spead2::recv::stream> stream;
-    spead2::bug_compat_mask bug_compat = opts.pyspead ? spead2::BUG_COMPAT_PYSPEAD_0_5_2 : 0;
-    if (opts.ring)
-        stream.reset(new spead2::recv::ring_stream<>(thread_pool, bug_compat, opts.heaps, opts.ring_heaps));
+    spead2::recv::stream_config config = opts.receiver.make_stream_config(opts.protocol);
+
+    if (opts.receiver.ring)
+    {
+        spead2::recv::ring_stream_config ring_config = opts.receiver.make_ring_stream_config();
+        stream.reset(new spead2::recv::ring_stream<>(thread_pool, config, ring_config));
+    }
     else
-        stream.reset(new callback_stream(opts, thread_pool, bug_compat, opts.heaps));
+        stream.reset(new callback_stream(opts, thread_pool, config));
 
-    if (opts.mem_pool)
-    {
-        std::shared_ptr<spead2::memory_pool> pool = std::make_shared<spead2::memory_pool>(
-            opts.mem_lower, opts.mem_upper, opts.mem_max_free, opts.mem_initial);
-        stream->set_memory_allocator(pool);
-    }
-    if (opts.memcpy_nt)
-        stream->set_memcpy(spead2::MEMCPY_NONTEMPORAL);
-#if SPEAD2_USE_IBV
-    std::vector<udp::endpoint> ibv_endpoints;
-#endif
-    for (It i = first_source; i != last_source; ++i)
-    {
-        std::string host = "";
-        std::string port;
-        auto colon = i->rfind(':');
-        if (colon != std::string::npos)
-        {
-            host = i->substr(0, colon);
-            port = i->substr(colon + 1);
-        }
-        else
-            port = *i;
-
-        bool is_pcap = false;
-        try
-        {
-            boost::lexical_cast<std::uint16_t>(port);
-        }
-        catch (boost::bad_lexical_cast &)
-        {
-            is_pcap = true;
-        }
-
-        if (is_pcap)
-        {
-#if SPEAD2_USE_PCAP
-            stream->emplace_reader<spead2::recv::udp_pcap_file_reader>(*i);
-#else
-            throw std::runtime_error("spead2 was compiled without pcap support");
-#endif
-        }
-        else if (opts.tcp)
-        {
-            tcp::resolver resolver(thread_pool.get_io_service());
-            tcp::resolver::query query(host, port, tcp::resolver::query::address_configured);
-            tcp::endpoint endpoint = *resolver.resolve(query);
-            stream->emplace_reader<spead2::recv::tcp_reader>(endpoint, opts.packet, opts.buffer);
-        }
-        else
-        {
-            udp::resolver resolver(thread_pool.get_io_service());
-            udp::resolver::query query(host, port,
-                boost::asio::ip::udp::resolver::query::address_configured
-                | boost::asio::ip::udp::resolver::query::passive);
-            udp::endpoint endpoint = *resolver.resolve(query);
-#if SPEAD2_USE_IBV
-            if (opts.ibv)
-            {
-                ibv_endpoints.push_back(endpoint);
-            }
-            else
-#endif
-            if (endpoint.address().is_v4() && !opts.bind.empty())
-            {
-                stream->emplace_reader<spead2::recv::udp_reader>(
-                    endpoint, opts.packet, opts.buffer,
-                    boost::asio::ip::address_v4::from_string(opts.bind));
-            }
-            else
-            {
-                if (!opts.bind.empty())
-                    std::cerr << "--bind is not implemented for IPv6\n";
-                stream->emplace_reader<spead2::recv::udp_reader>(endpoint, opts.packet, opts.buffer);
-            }
-        }
-    }
-#if SPEAD2_USE_IBV
-    if (!ibv_endpoints.empty())
-    {
-        boost::asio::ip::address interface_address = boost::asio::ip::address::from_string(opts.bind);
-        stream->emplace_reader<spead2::recv::udp_ibv_reader>(
-            ibv_endpoints, interface_address, opts.packet, opts.buffer,
-            opts.ibv_comp_vector, opts.ibv_max_poll);
-    }
-#endif
+    std::vector<std::string> endpoints(first_source, last_source);
+    opts.receiver.add_readers(*stream, endpoints, opts.protocol, true);
     return stream;
 }
 
@@ -397,7 +332,7 @@ int main(int argc, const char **argv)
     }
     else
     {
-        if (opts.sources.size() > 1 && opts.ring)
+        if (opts.sources.size() > 1 && opts.receiver.ring)
         {
             std::cerr << "Multiple streams cannot be used with --ring\n";
             std::exit(2);
@@ -418,7 +353,7 @@ int main(int argc, const char **argv)
     });
 
     std::int64_t n_complete = 0;
-    if (opts.ring)
+    if (opts.receiver.ring)
     {
         auto &stream = dynamic_cast<spead2::recv::ring_stream<> &>(*streams[0]);
         while (true)

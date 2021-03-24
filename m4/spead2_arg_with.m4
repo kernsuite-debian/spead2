@@ -1,4 +1,4 @@
-# Copyright 2016 SKA South Africa
+# Copyright 2016 National Research Foundation (SARAO)
 #
 # This program is free software: you can redistribute it and/or modify it under
 # the terms of the GNU Lesser General Public License as published by the Free
@@ -17,7 +17,6 @@
 
 # SPEAD2_ARG_WITH(ARG, HELP, VAR, TEST)
 # ----------------------------------------
-# 
 AC_DEFUN([SPEAD2_ARG_WITH],
          [AS_VAR_PUSHDEF(var, [$3])
           AS_VAR_PUSHDEF(wvar, [with_$1])
