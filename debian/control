@@ -2,52 +2,33 @@ Source: spead2
 Section: science
 Priority: optional
 Maintainer: KERN packaging <packaging@kernsuite.info>
-Build-Depends: debhelper (>=9),
+Build-Depends: debhelper (>=11),
                dh-autoreconf,
                dh-python,
-               python-all,
+               pkg-config,
+               pybind11-dev (>=2.6.2~),
                python3-all,
-               python-setuptools,
                python3-setuptools,
-               python-dev,
                python3-dev,
-               python-trollius,
-               python-six,
+               python3-distutils,
                python3-six,
-               python-numpy,
                python3-numpy,
-               python-netifaces,
+               python3-pybind11,
                python3-netifaces,
-               python-nose,
-               python3-nose,
-               python-decorator,
+               python3-pytest,
                python3-decorator,
+               python3-pycparser,
+               python3-pybind11,
                libibverbs-dev,
                librdmacm-dev,
-               libpcap0.8-dev,
+               libpcap-dev,
                libboost-dev,
+               libboost-all-dev,
                libboost-program-options-dev,
                libboost-system-dev,
-Standards-Version: 3.9.8
+Standards-Version: 4.5.0
 Homepage: https://github.com/ska-sa/spead2
-X-Python-Version: >= 2.6
-X-Python3-Version: >= 3.2
-
-Package: python-spead2
-Architecture: any
-Multi-Arch: foreign
-Depends: ${misc:Depends},
- ${python:Depends},
- ${shlibs:Depends},
- python-trollius,
- python-six,
- python-numpy,
- python-netifaces,
- python-decorator
-Description: Streaming Protocol for Exchange of Astronomical Data (python 2)
- spead2 is an implementation of the SPEAD protocol, with both Python and C++
- bindings. The 2 in the name indicates that this is a new implementation of the
- protocol; the protocol remains essentially the same. 
+X-Python3-Version: >= 3.6
 
 Package: python3-spead2
 Architecture: any
@@ -55,6 +36,7 @@ Multi-Arch: foreign
 Depends: ${misc:Depends},
  ${python3:Depends},
  ${shlibs:Depends},
+ libpcap0.8,
  python3-six,
  python3-numpy,
  python3-netifaces,
@@ -73,5 +55,3 @@ Description: Streaming Protocol for Exchange of Astronomical Data
  spead2 is an implementation of the SPEAD protocol, with both Python and C++
  bindings. The 2 in the name indicates that this is a new implementation of the
  protocol; the protocol remains essentially the same. 
-
-

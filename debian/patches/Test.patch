@@ -1,0 +1,13 @@
+diff --git a/configure.ac b/configure.ac
+index d4e60a0..813ce0f 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -54,7 +54,7 @@ SPEAD2_ARG_WITH(
+     [ibv],
+     [AS_HELP_STRING([--without-ibv], [Do not use libibverbs and librdmacm, even if detected])],
+     [SPEAD2_USE_IBV],
+-    [PKG_CHECK_MODULES([IBV], [libibverbs librdmacm], [SPEAD2_USE_IBV=1],
++    [PKG_CHECK_MODULES([IBV], [libibverbs], [librdmacm], [SPEAD2_USE_IBV=1],
+         [SPEAD2_CHECK_LIB(
+          [infiniband/verbs.h], [ibverbs], [ibv_create_wq(NULL, NULL)],
+          [SPEAD2_USE_IBV=1
